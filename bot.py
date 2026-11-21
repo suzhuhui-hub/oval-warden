@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Armory"
+    name = "Oval Warden Rally"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -316,6 +316,29 @@ class Bot:
                     self.last_goal = item_id
                     return mode, tuple(pos[:2]), urgent, item
             return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
+
+        best_capture = None
+        for _, _, _, pos, drop in candidates:
+            if drop.get("holder") not in (None, me["id"]):
+                continue
+            remaining = drop["capture_s"] - drop.get("progress", 0)
+            gap = max(0, math.dist(xy, pos[:2]) - drop["radius"] + 1)
+            run = gap / me["stats"]["boost_speed"]
+            complete_in = max(run, drop["lands_in"]) + remaining
+            if complete_in > (7.0 if hp < 0.80 else 5.4):
+                continue
+            protected = drop.get("holder") == me["id"] and remaining <= 1.2
+            contest = min((math.dist(e["pos"][:2], pos[:2]) for _, _, e, _ in threats), default=999)
+            if not protected and contest < drop["radius"] + 7.5 * complete_in:
+                continue
+            if gap > 3 and not self.arena.direct(xy, pos[:2], me["stats"]["radius"]):
+                continue
+            if best_capture is None or complete_in < best_capture[0]:
+                best_capture = complete_in, drop
+        if best_capture:
+            chosen = best_capture[1]
+            self.last_goal = chosen["id"]
+            return "drop", tuple(chosen["pos"][:2]), False, chosen
 
         if any(w is None for w in me["weapons"]):
             finish = self.duel_target and self.duel_target.get("hp", 1400) < 220
