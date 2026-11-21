@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v10"
+    name = "Oval Warden v11"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -184,7 +184,7 @@ class Bot:
         best_value, best_point = -math.inf, None
         deadline = perf_counter() + 0.0025
         min_clearance = self.arena.route_clearance(me["stats"]["radius"])
-        for distance in (0, 17, 30, 46):
+        for distance in (0, 18, 34, 50):
             offsets = (0,) if not distance else (0, -1, 1, -2, 2, -3, 3, 4)
             for offset in offsets:
                 if perf_counter() > deadline:
@@ -201,11 +201,11 @@ class Bot:
                     continue
                 altitude = self.arena.terrain(*point) if distance else me["pos"][2]
                 eye = (*point, altitude + me["stats"]["height"] * 0.55)
-                value = -0.11 * distance
+                value = -0.11 * distance + min(14, self.safe(point, me, obs) * 0.16)
                 for origin, weight in sources:
                     meters = math.dist(eye, origin)
                     exposure = self.arena.visible(eye, origin)
-                    value += weight * (clamp(meters / 15, 0, 7) - (10.5 if exposure else 0))
+                    value += weight * (clamp(meters / 14, 0, 8) - (13.5 if exposure else 0))
                     if meters < 18:
                         value -= 8 * weight
                 if distance and not self.arena.direct(xy, point, me["stats"]["radius"]):
@@ -390,6 +390,11 @@ class Bot:
         farming = mode in ("crates", "drone", "cubes") and obs["t"] < 105 and me["cubes"] < 7
         for weight, distance, enemy, aggressive in threats[:6]:
             enemy_hp = enemy.get("hp", 999)
+            if obs["zone"]["radius"] > 43:
+                if retreat and enemy_hp > 260 and (distance > 31 or not aggressive):
+                    continue
+                if not aggressive and distance > 44 and enemy_hp >= 350:
+                    continue
             if farming and not aggressive and enemy_hp > 365 and distance > 43:
                 continue
             # A distant hit resets our own repair counter, even while behind cover.
@@ -623,7 +628,7 @@ class Bot:
                     delta = future - math.dist(xy, (ex, ey))
                     offset = abs(ez - z)
                     if retreat or distance < 27:
-                        repel = 0.31 if mode == "cover" else 0.58 if retreat else 0.29
+                        repel = 0.31 if mode == "cover" else 0.70 if retreat else 0.29
                         value += clamp(delta, -10, 10) * weight * repel / (1 + offset / 30)
                     if chase_id == enemy["id"]:
                         progress = abs(distance - preferred_range) - abs(future - preferred_range)
@@ -665,7 +670,8 @@ class Bot:
         pressure = sum(weight for weight, dist, _, aimed in threats[:4] if dist < 105 and aimed)
         full_fight = obs["alive"] <= 3 or obs["zone"]["radius"] < 41
         recent_hurt = sum(amount for _, _, amount in self.incoming)
-        repair_threshold = 0.79 if not full_fight else 0.44
+        multiple = sum(1 for _, d, _, armed in threats[:5] if d < 115 and armed) >= 2
+        repair_threshold = (0.87 if multiple else 0.77) if not full_fight else 0.41
         if hp > 0.92 or (full_fight and hp >= 0.64):
             self.recovering = False
         elif (hp < repair_threshold and (pressure > 0.49 or now - self.last_damage < 3)) or (
@@ -673,7 +679,7 @@ class Bot:
         ):
             finishable = any(d < 45 and e.get("hp", 999) < 220 for _, d, e, _ in threats)
             self.recovering = self.recovering or not (finishable and hp >= 0.48 and pressure < 2.5)
-        retreat = self.recovering or pressure > (3.7 if full_fight else 2.36)
+        retreat = self.recovering or pressure > (3.7 if full_fight else 1.92)
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
         target, options = self.focus(me, obs, threats, retreat, mode, item)
         movement, boost, jump, travel_yaw = self.movement(me, obs, threats, goal, mode, item, target, retreat, urgent)
