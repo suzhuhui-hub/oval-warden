@@ -88,7 +88,7 @@ def solution(me, target, weapon, config, arena):
     yaw_tolerance = math.atan2(radius * 0.81, max(1, horizontal))
     pitch_tolerance = math.atan2(half_height * 0.81, max(1, horizontal))
     if kind == "lightning":
-        yaw_tolerance = math.radians(stats.get("cone_deg", 30) * 0.36)
+        yaw_tolerance = math.radians(stats.get("cone_deg", 30) * 0.82)
         pitch_tolerance = 2.0
     return math.atan2(dy, dx), pitch, yaw_tolerance, pitch_tolerance, travel, meters
 
@@ -132,6 +132,21 @@ def fire_control(me, options, focused, evasive, hp_fraction):
     if not options:
         return None, [False, False]
     _, _, _, primary = max(options, key=lambda item: item[0])
+    gun = next((entry for entry in options if entry[2]["kind"] == "gun" and
+                entry[2].get("ammo", 0) and not entry[2].get("reload", 0) and
+                entry[2].get("cooldown", 0) < 0.105), None)
+    laser = next((entry for entry in options if entry[2]["kind"] == "laser"), None)
+    arc = next((entry for entry in options if entry[2]["kind"] == "lightning"), None)
+    if gun and arc and abs(angle_delta(gun[3][0], arc[3][0])) < arc[3][2]:
+        primary = gun[3]
+    if gun and laser:
+        weapon = laser[2]
+        remaining = weapon["stats"]["charge"] - weapon.get("charge", 0)
+        settle = abs(angle_delta(gun[3][0], laser[3][0])) / me["stats"]["turn_rate"]
+        if weapon.get("cooldown", 0) > 0.10 or (
+            remaining > settle + 0.16 and focused.get("hp", 9999) > weapon["stats"]["damage"] * 0.78
+        ):
+            primary = gun[3]
     yaw, pitch = primary[:2]
     torso = me["stats"]
     pitch = clamp(pitch, torso["min_pitch"], torso["max_pitch"])
@@ -166,7 +181,7 @@ def fire_control(me, options, focused, evasive, hp_fraction):
             if charge > 0:
                 timeout = stats["charge"] + min(0.95, stats["hold_s"] * 0.65)
                 fire[slot] = charge < timeout and (charge < desired - 0.035 or not aligned)
-            elif cooldown <= 0.07 and shared:
+            elif cooldown <= 0.07:
                 fire[slot] = (not evasive or meters > 45 or hp_fraction > 0.45) and abs(angle_delta(actual_yaw, yaw)) < 0.52
         elif aligned and cooldown < 0.105:
             fire[slot] = kind != "gun" or (weapon.get("ammo", 0) > 0 and weapon.get("reload", 0) < 0.05)
