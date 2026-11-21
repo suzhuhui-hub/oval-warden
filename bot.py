@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v2"
+    name = "Oval Warden v7"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -28,6 +28,8 @@ class Bot:
         self.recovering = False
         self.cover_goal = None
         self.cover_refresh = 0
+        self.circle_anchor = None
+        self.anchor_time = 0
         self.last_target = None
         self.last_goal = None
         self.last_take = -100
@@ -71,7 +73,7 @@ class Bot:
                 self.objects[item["id"]] = (key, item, t)
         live_ids = {item["id"] for key in ("pickups", "cubes", "crates") for item in obs[key]}
         for item_id, (_, item, seen) in list(self.objects.items()):
-            if t - seen > 11 or (item_id not in live_ids and math.dist(me["pos"], item["pos"]) < 11):
+            if t - seen > 18 or (item_id not in live_ids and math.dist(me["pos"], item["pos"]) < 11):
                 del self.objects[item_id]
 
     def assess_threats(self, me, obs):
@@ -133,8 +135,8 @@ class Bot:
         offer = obs.get("offer")
         if offer:
             ratings = {
-                "plating": 10, "nanites": 10.3 if obs["t"] < 315 else 7.3,
-                "armor": 9.2, "servos": 8.7, "jets": 8.2, "laser_damage": 8.65,
+                "plating": 10.2, "nanites": 10.8 if obs["t"] < 315 else 8.0,
+                "armor": 9.9, "servos": 9.7, "jets": 8.8, "laser_damage": 8.65,
                 "gun_mag": 8.4, "mortar_reload": 7.85, "lightning_efficiency": 8.9,
                 "lightning_range": 7.65, "laser_charge": 7.6, "gun_damage": 7.2,
                 "gun_rate": 7.1, "reactor": 7.0, "capacitor": 6.4, "gyros": 6.3,
@@ -181,7 +183,7 @@ class Bot:
         away = bearing(sources[0][0], xy)
         best_value, best_point = -math.inf, None
         deadline = perf_counter() + 0.0025
-        min_clearance = max(1, math.ceil(me["stats"]["radius"] / self.arena.cell))
+        min_clearance = self.arena.route_clearance(me["stats"]["radius"])
         for distance in (0, 17, 30, 46):
             offsets = (0,) if not distance else (0, -1, 1, -2, 2, -3, 3, 4)
             for offset in offsets:
@@ -221,8 +223,8 @@ class Bot:
         next_dist = math.dist(xy, ahead)
         eta = next_dist / me["stats"]["walk_speed"] * 1.28
         outside = math.dist(xy, zone["center"]) - zone["radius"]
-        urgent = outside > -9 or (
-            next_dist > zone["next_radius"] - 8 and now + eta + 10 > zone["shrink_end"]
+        urgent = outside > -12 or (
+            next_dist > zone["next_radius"] - 12 and now + eta + 15 > zone["shrink_end"]
         )
         if zone["next_radius"] < 3 or zone["radius"] < 29:
             return "endgame", tuple(ahead), True, None
@@ -230,8 +232,8 @@ class Bot:
         edge = max(0.0, min(zone["next_radius"] - 25, zone["next_radius"] * 0.63))
         vector = unit(xy[0] - ahead[0], xy[1] - ahead[1])
         fallback = (ahead[0] + edge * vector[0], ahead[1] + edge * vector[1])
-        if urgent:
-            return "zone", fallback, urgent, None
+        if outside > 1:
+            return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
 
         candidates = []
         hp = me["hp"] / me["max_hp"]
@@ -244,12 +246,28 @@ class Bot:
                 (1.0 if q[3] else 0.65) * clamp((75 - math.dist((x, y), q[2]["pos"][:2])) / 75, 0, 1)
                 for q in threats
             )
-            if self.safe(drop["pos"], me, obs) > 5 and distance <= 225 and threat_at_drop < (1.25 if hp > 0.62 else 0.75):
-                repair = 72 * (1 - hp)
-                value = 132 + repair - distance * 0.45 - wait * 2.2 - 46 * threat_at_drop
-                if drop.get("holder") == me["id"]:
+            active = drop.get("holder") == me["id"]
+            arrival = (distance * 1.20) / (me["stats"]["walk_speed"] * 1.18)
+            strategic = me["cubes"] < 10 or hp < 0.88
+            max_distance = min(365, 165 + drop["lands_in"] * 8.2) if strategic else 130
+            if self.safe(drop["pos"], me, obs) > 8 and distance <= max_distance and threat_at_drop < (1.5 if hp > 0.66 else 0.85):
+                repair = 111 * (1 - hp)
+                upgrade = 45 if me["cubes"] < 7 else 27 if me["cubes"] < 10 else 5
+                value = 128 + repair + upgrade - arrival * 2.4 - wait * 0.64 - 43 * threat_at_drop
+                if active:
                     value += 45
+                elif drop.get("holder") is not None and drop.get("progress", 0) > 0.5:
+                    value -= max(0, arrival - 0.8) * 9
+                if self.last_goal == drop["id"]:
+                    value += 18
                 candidates.append((value, drop["id"], "drop", drop["pos"], drop))
+
+        if urgent:
+            for value, item_id, mode, pos, item in sorted(candidates, key=lambda c: -c[0]):
+                if value > 57 and math.dist(pos[:2], ahead) < zone["next_radius"] - 18:
+                    self.last_goal = item_id
+                    return mode, tuple(pos[:2]), urgent, item
+            return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
 
         if retreat:
             recover_position = self.find_cover(me, obs, threats)
@@ -270,13 +288,13 @@ class Bot:
                     if item["kind"] == "laser":
                         value += 18
                 elif kind == "cubes":
-                    value = 115 if me["cubes"] < 3 else 99 if me["cubes"] < 10 else 59
+                    value = 126 if me["cubes"] < 3 else 104 if me["cubes"] < 10 else 59
                 else:
                     if hp < 0.86 and now - self.last_damage < me["stats"]["regen_delay"] + 6:
                         continue
                     if any(q[1] < 64 and q[3] for q in threats):
                         continue
-                    value = 58 if me["cubes"] < 6 else 45 if me["cubes"] < 10 else 22
+                    value = 69 if me["cubes"] < 6 else 48 if me["cubes"] < 10 else 22
                     value += 16 if any(w is None for w in me["weapons"]) else 0
                 value -= distance * 0.65 + max(0, abs(z - me["pos"][2]) - 3) * 1.8 + risk * 46
                 if self.last_goal == item_id:
@@ -290,13 +308,60 @@ class Bot:
                 return mode, tuple(pos[:2]), urgent, item
 
         self.last_goal = None
-        if next_dist < edge + 24 and not retreat and now < 310:
+        if next_dist < edge + 24 and not retreat and now < 100:
             spokes = 8
             index = int(now / 18) + me["id"] * 3
             yaw = math.tau * (index % spokes) / spokes
             radius = min(edge * 0.9, 102.0)
             return "patrol", (ahead[0] + radius * math.cos(yaw), ahead[1] + radius * math.sin(yaw)), urgent, None
-        return "zone", fallback, urgent, None
+        return "zone", self.circle_route(me, obs, threats, fallback, False), urgent, None
+
+    def circle_route(self, me, obs, threats, fallback, urgent):
+        zone = obs["zone"]
+        center = zone["next_center"]
+        radius = zone["next_radius"]
+        now = obs["t"]
+        xy = me["pos"][:2]
+        if self.circle_anchor and now < self.anchor_time and math.dist(self.circle_anchor, center) < radius - 9:
+            return self.circle_anchor
+        self.anchor_time = now + (0.95 if urgent else 2.6)
+        line = bearing(center, xy)
+        radius0 = max(0, min(radius - 25, radius * 0.63))
+        focus_radius = max(0, min(radius - 23, radius * 0.35))
+        min_clearance = self.arena.route_clearance(me["stats"]["radius"])
+        nearest_threats = [(weight, enemy) for weight, _, enemy, hostile in threats if hostile][:3]
+        best = None
+        for radius_hint in (radius0, focus_radius):
+            for step in (0, -1, 1, -2, 2, -3, 3, 4):
+                dx, dy = direction(line + step * math.pi / 4)
+                wanted = (center[0] + dx * radius_hint, center[1] + dy * radius_hint)
+                if not self.arena.in_bounds(*wanted, 5):
+                    continue
+                index = self.arena.nearest(*wanted, minimum=min_clearance, max_ring=5)
+                candidate = self.arena.center(index)
+                if self.arena.clearance[index] < min_clearance or self.safe(candidate, me, obs) < 11:
+                    continue
+                distance = math.dist(xy, candidate)
+                score = -distance * (0.51 if urgent else 0.29)
+                if not self.arena.direct(xy, candidate, me["stats"]["radius"]):
+                    score -= 14 if urgent else 8
+                if not urgent:
+                    score += min(18, radius - math.dist(candidate, center)) * 0.68
+                if self.arena.clearance[index] in (1, 2, 3):
+                    score += 6
+                height = self.arena.terrain(*candidate) + 5
+                for weight, enemy in nearest_threats:
+                    ex, ey, ez = enemy["pos"]
+                    gap = math.dist(candidate, (ex, ey))
+                    score += weight * min(16, gap * 0.14)
+                    if gap < 150 and not self.arena.visible((*candidate, height), (ex, ey, ez + 7)):
+                        score += 9 * weight
+                    elif gap < 45:
+                        score -= 10 * weight
+                if best is None or score > best[0]:
+                    best = (score, candidate)
+        self.circle_anchor = best[1] if best else tuple(fallback)
+        return self.circle_anchor
 
     def focus(self, me, obs, threats, retreat, mode, item):
         combatants = []
@@ -335,11 +400,33 @@ class Bot:
                     return drone, options
         return None, []
 
-    def waypoint(self, me, obs, goal, elevated):
+    def waypoint(self, me, obs, goal, elevated, zone_route=False):
         pos = me["pos"]
         xy = pos[:2]
         radius = me["stats"]["radius"]
         now = obs["t"]
+        circle = obs["zone"]
+        circle_goal = tuple(circle["next_center"])
+        circle_radius = max(0.0, circle["next_radius"] - 12)
+        if zone_route and circle_radius > 5 and math.dist(xy, circle_goal) > circle_radius:
+            goal = circle_goal
+            want_replan = self.route_goal != goal or now >= self.replan or not self.route
+            if want_replan:
+                self.route_goal = goal
+                self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008,
+                                              goal_radius=circle_radius)
+                self.replan = now + (0.7 if self.stuck > 4 else 2.3)
+        else:
+            self.ground_route(me, goal, elevated, now)
+        while len(self.route) > 1 and math.dist(xy, self.route[0]) < 4.2:
+            self.route.pop(0)
+        if len(self.route) > 2 and self.arena.direct(xy, self.route[2], radius):
+            del self.route[:2]
+        return self.route[0] if self.route else goal
+
+    def ground_route(self, me, goal, elevated, now):
+        xy = me["pos"][:2]
+        radius = me["stats"]["radius"]
         want_replan = self.route_goal is None or math.dist(goal, self.route_goal) > 12
         if want_replan or now >= self.replan:
             self.route_goal = goal
@@ -347,13 +434,8 @@ class Bot:
                 self.route = [goal]
                 self.replan = now + 0.75
             else:
-                self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.005)
+                self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008)
                 self.replan = now + (0.65 if self.stuck > 4 else 2.2)
-        while len(self.route) > 1 and math.dist(xy, self.route[0]) < 3.8:
-            self.route.pop(0)
-        if len(self.route) > 2 and self.arena.direct(xy, self.route[2], radius):
-            del self.route[:2]
-        return self.route[0] if self.route else goal
 
     def projectile_cost(self, me, velocity, projectiles):
         cost = 0.0
@@ -401,7 +483,9 @@ class Bot:
             self.jet_until = now + clamp((hover_height - z) / 10 + 0.65, 0.55, 4.35)
             self.replan = 0
 
-        waypoint = self.waypoint(me, obs, goal, elevated and self.jet_until > now)
+        waypoint = self.waypoint(me, obs, goal, elevated and self.jet_until > now,
+                                 zone_route=mode == "zone" and urgent and me["grounded"]
+                                 and self.stuck > 4 and self.jet_until <= now)
         if mode in ("drop", "endgame") and math.dist(xy, goal) < (4.5 if mode == "drop" else 11):
             waypoint = goal
         walking = me["stats"]["walk_speed"]
@@ -411,11 +495,14 @@ class Bot:
         recent_damage = now - self.last_damage < 1.3
         closing_laser = any(q[2].get("charging") and q[3] and q[1] < 155 for q in close_threats)
         boost_burst = (now + me["id"] * 0.18) % 3.6 < 1.25
+        drop_sprint = mode == "drop" and goal_distance > 23 and (
+            me["energy"] > 64 or (me["energy"] > 33 and item and item["lands_in"] < 1.0)
+        )
         boost = me["grounded"] and me["energy"] > 15 and (
             (urgent and goal_distance > 13) or
             (closing_laser and me["energy"] > 22) or
             (retreat and (danger > 0.8 or recent_damage) and me["energy"] > 24) or
-            (boost_burst and me["energy"] > 47 and (danger > 1.05 or (mode == "drop" and goal_distance > 32)))
+            drop_sprint or (boost_burst and me["energy"] > 47 and danger > 1.05)
         )
         if not me["grounded"] or self.jet_until > now:
             boost = self.jet_until > now and me["energy"] > 5 and (
@@ -451,6 +538,10 @@ class Bot:
                 chase_id = target["id"]
                 if any(w and w["kind"] == "lightning" for w in me["weapons"]):
                     preferred_range = 30
+        cover_threats = [(w, e) for w, d, e, hostile in close_threats if hostile and d < 108][:2]
+        target_id = target["id"] if target else None
+        can_trade = any(w and w.get("cooldown", 0) < 0.18 and not w.get("reload", 0) for w in me["weapons"])
+        cover_bias = 1.0 if retreat else 0.47 if mode == "drop" and goal_distance < 5 else 0.83
 
         def rate(move):
             dx, dy = move
@@ -467,6 +558,20 @@ class Bot:
                 z_far += clamp(self.arena.terrain(sx, sy) - terrain_base, 0, 3.4)
             near_block = not self.arena.walkable(nx, ny, z_near, height)
             far_block = not self.arena.walkable(sx, sy, z_far, height)
+            shoulder_x, shoulder_y = -dy * radius, dx * radius
+            if (dx or dy) and not near_block:
+                near_block = any(
+                    not self.arena.walkable(nx + sign * shoulder_x, ny + sign * shoulder_y, z_near, height)
+                    for sign in (-1, 1)
+                )
+            immediate_block = False
+            if me["grounded"] and (dx or dy):
+                tx, ty = xy[0] + dx * 1.25, xy[1] + dy * 1.25
+                tz = z + clamp(self.arena.terrain(tx, ty) - terrain_base, 0, 0.65)
+                immediate_block = any(
+                    not self.arena.walkable(tx + ox * radius, ty + oy * radius, tz, height)
+                    for ox, oy in ((0, 0), (0.86, 0), (-0.86, 0), (0, 0.86), (0, -0.86))
+                )
             arrive = math.dist((sx, sy), waypoint)
             value = (max_step - arrive) * (0.45 if urgent else 0.35)
             if not stop:
@@ -475,6 +580,8 @@ class Bot:
                 value += 3.5 if mode in ("drop", "cover") else 1.45
             if near_block or far_block:
                 value -= 5.0 * near_block + 3.5 * far_block
+            if immediate_block:
+                value -= 10.5
             if far_block and near_block and self.jet_until > now:
                 value += 4.4
             edge = obs["zone"]["radius"] - math.dist((sx, sy), obs["zone"]["center"])
@@ -502,6 +609,14 @@ class Bot:
                             before = abs(angle_delta(enemy["aim"][0], bearing((ex, ey), xy)))
                             after = abs(angle_delta(enemy["aim"][0], bearing((ex, ey), (sx, sy))))
                             value += clamp((after - before) * distance, -8, 8) * 0.44 * weight
+            if not urgent and cover_threats:
+                torso = (sx, sy, z_far + height * 0.57)
+                for weight, enemy in cover_threats:
+                    ex, ey, ez = enemy["pos"]
+                    source = (ex + enemy["vel"][0] * 0.22, ey + enemy["vel"][1] * 0.22, ez + 7)
+                    if not self.arena.visible(torso, source):
+                        primary = can_trade and enemy["id"] == target_id and not retreat
+                        value += weight * (0.46 if primary else 3.8) * cover_bias
             if projectiles:
                 value -= self.projectile_cost(me, (vx, vy), projectiles) * 1.65
             return value
@@ -522,7 +637,7 @@ class Bot:
         pressure = sum(weight for weight, dist, _, aimed in threats[:4] if dist < 105 and aimed)
         full_fight = obs["alive"] <= 3 or obs["zone"]["radius"] < 41
         recent_hurt = sum(amount for _, _, amount in self.incoming)
-        repair_threshold = 0.74 if not full_fight else 0.42
+        repair_threshold = 0.79 if not full_fight else 0.44
         if hp > 0.92 or (full_fight and hp >= 0.64):
             self.recovering = False
         elif (hp < repair_threshold and (pressure > 0.49 or now - self.last_damage < 3)) or (
@@ -530,7 +645,7 @@ class Bot:
         ):
             finishable = any(d < 45 and e.get("hp", 999) < 220 for _, d, e, _ in threats)
             self.recovering = self.recovering or not (finishable and hp >= 0.48 and pressure < 2.5)
-        retreat = self.recovering or pressure > (4.1 if full_fight else 2.9)
+        retreat = self.recovering or pressure > (3.7 if full_fight else 2.36)
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
         target, options = self.focus(me, obs, threats, retreat, mode, item)
         movement, boost, jump, travel_yaw = self.movement(me, obs, threats, goal, mode, item, target, retreat, urgent)

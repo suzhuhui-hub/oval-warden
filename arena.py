@@ -141,7 +141,7 @@ class Arena:
         dx, dy = target[0] - source[0], target[1] - source[1]
         steps = max(1, math.ceil(math.hypot(dx, dy) / (self.cell * 0.8)))
         previous = self.key(*source)
-        minimum = max(1, math.ceil(radius / self.cell))
+        minimum = self.route_clearance(radius)
         for step in range(1, steps + 1):
             i = self.key(source[0] + dx * step / steps, source[1] + dy * step / steps)
             if self.clearance[i] < minimum or abs(self.ground[i] - self.ground[previous]) > 3.4:
@@ -166,16 +166,20 @@ class Arena:
                 return min(candidates)[1]
         return n
 
-    def route(self, source, goal, radius, stop_at):
+    def route_clearance(self, radius):
+        return max(1, math.ceil((radius + 1.8) / self.cell))
+
+    def route(self, source, goal, radius, stop_at, goal_radius=0.0):
         """Return a short list of waypoints, even if this tick only finds a partial path."""
-        minimum = max(1, math.ceil(radius / self.cell))
+        minimum = self.route_clearance(radius)
         start = self.nearest(*source, minimum, max_ring=4)
-        finish = self.nearest(*goal, minimum)
-        finish_x, finish_y = self.center(finish)
+        finish = self.nearest(*goal, minimum) if not goal_radius else None
+        finish_x, finish_y = self.center(finish) if finish is not None else goal
 
         def estimate(index):
             x, y = self.center(index)
-            return math.hypot(x - finish_x, y - finish_y) / self.cell
+            remaining = math.hypot(x - finish_x, y - finish_y) - goal_radius
+            return max(0, remaining) / self.cell
 
         open_set = [(estimate(start), 0, start)]
         distance = {start: 0}
@@ -183,7 +187,7 @@ class Arena:
         best = start
         best_h = estimate(start)
         offsets = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
-        for count in range(1700):
+        for count in range(3500):
             if not open_set or (count % 64 == 0 and perf_counter() > stop_at):
                 break
             _, cost, i = heapq.heappop(open_set)
@@ -192,7 +196,7 @@ class Arena:
             h = estimate(i)
             if h < best_h:
                 best_h, best = h, i
-            if i == finish:
+            if i == finish or (goal_radius and h == 0):
                 break
             iy, ix = divmod(i, self.nx)
             for dx, dy in offsets:
@@ -209,6 +213,8 @@ class Arena:
                 if new < distance.get(j, math.inf):
                     parent[j], distance[j] = i, new
                     heapq.heappush(open_set, (new + 1.45 * estimate(j), new, j))
+        if best == start and open_set and open_set[0][2] in parent:
+            best = open_set[0][2]
         path = []
         i = best
         while i != start:
