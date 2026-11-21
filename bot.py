@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v7.1"
+    name = "Oval Warden v14"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -28,6 +28,8 @@ class Bot:
         self.recovering = False
         self.cover_goal = None
         self.cover_refresh = 0
+        self.peek_cache = None
+        self.peek_until = 0
         self.circle_anchor = None
         self.anchor_time = 0
         self.last_target = None
@@ -400,6 +402,85 @@ class Bot:
                     return drone, options
         return None, []
 
+    def peek(self, me, obs, threats, target, mode, item):
+        if mode in ("drop", "endgame") or not threats or not me["grounded"]:
+            return None
+        if mode in ("pickups", "cubes") and item and math.dist(me["pos"], item["pos"]) < 16:
+            return None
+        xy = me["pos"][:2]
+        plausible = [related for related in threats[:4] if related[1] < 128 and related[3]]
+        if not plausible:
+            return None
+        if target and target.get("kind") == "mech":
+            opponent = target
+        else:
+            opponent = plausible[0][2]
+        if math.dist(me["pos"], opponent["pos"]) > 123:
+            return None
+        hp = me["hp"] / me["max_hp"]
+        if hp < 0.69 or len(plausible) > 2:
+            return None
+
+        armed = [w for w in me["weapons"] if w]
+        waiting = all(w.get("reload", 0) > 0.25 or w.get("cooldown", 0) > 0.45 for w in armed)
+        now = obs["t"]
+        key = (opponent["id"], waiting, obs["zone"]["next_radius"])
+        if self.peek_cache and self.peek_cache[0] == key and now < self.peek_until:
+            return self.peek_cache[1]
+        self.peek_until = now + 0.85
+        self.peek_cache = (key, None)
+
+        ex, ey, ez = opponent["pos"]
+        ex += opponent["vel"][0] * 0.35
+        ey += opponent["vel"][1] * 0.35
+        target_center = (ex, ey, ez + 5)
+        away = bearing(target_center, xy)
+        preferred = 62
+        for weapon in armed:
+            if weapon["kind"] == "lightning" and me["energy"] > 27:
+                preferred = min(preferred, weapon["stats"]["range"] * 0.81)
+            elif weapon["kind"] == "laser" and preferred > 50:
+                preferred = 77
+        radius = me["stats"]["radius"]
+        clearance = self.arena.route_clearance(radius)
+        best = (-math.inf, None)
+        deadline = perf_counter() + 0.0035
+        for distance in (0, 15, 28, 42):
+            choices = (0,) if not distance else (0, -2, 2, -1, 1, -3, 3, 4)
+            for i in choices:
+                if perf_counter() > deadline:
+                    self.peek_cache = (key, best[1])
+                    return best[1]
+                dx, dy = direction(away + i * math.pi / 4)
+                point = (xy[0] + distance * dx, xy[1] + distance * dy)
+                if not self.arena.in_bounds(*point, 6) or self.safe(point, me, obs) < 13:
+                    continue
+                if distance and self.arena.clearance[self.arena.key(*point)] < clearance:
+                    continue
+                z = self.arena.terrain(*point) if distance else me["pos"][2]
+                aim_from = (*point, z + me["stats"]["muzzle_height"])
+                sees = self.arena.visible(aim_from, target_center)
+                gap = math.dist(point, target_center[:2])
+                score = -0.27 * distance - 0.24 * abs(gap - preferred)
+                if waiting:
+                    score += 17 if not sees else 0
+                else:
+                    score += 20 if sees else 0
+                    if sees and abs(angle_delta(bearing(target_center, point), opponent["aim"][0])) > 1.65:
+                        score += 10
+                for weight, _, other, _ in plausible:
+                    if other["id"] == opponent["id"]:
+                        continue
+                    ox, oy, oz = other["pos"]
+                    if self.arena.visible(aim_from, (ox, oy, oz + 6)):
+                        score -= 12 * weight
+                if distance and not self.arena.direct(xy, point, radius):
+                    score -= 9
+                if score > best[0]:
+                    best = (score, point)
+        self.peek_cache = (key, best[1])
+        return best[1]
+
     def waypoint(self, me, obs, goal, elevated, zone_route=False):
         pos = me["pos"]
         xy = pos[:2]
@@ -515,10 +596,10 @@ class Bot:
         projectiles = sorted(obs["projectiles"], key=lambda p: math.dist(p["pos"][:2], xy))[:16]
         projectiles = [p for p in projectiles if math.dist(p["pos"][:2], xy) < 120]
         max_step = math.dist(xy, waypoint)
-        tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3}.get(mode, 1.8)
+        tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3, "peek": 2.8}.get(mode, 1.8)
         if mode == "crates":
             tolerance = 27 if target and item and target["id"] == item["id"] else 2.5
-        stop = goal_distance < tolerance and (mode in ("drop", "endgame", "crates", "cover") or not close_threats)
+        stop = goal_distance < tolerance and (mode in ("drop", "endgame", "crates", "cover", "peek") or not close_threats)
         candidates = [(0.0, 0.0)] if stop else []
         for i in range(-7, 9):
             yaw = angle + i * math.tau / 16
@@ -648,6 +729,10 @@ class Bot:
         retreat = self.recovering or pressure > (3.7 if full_fight else 2.36)
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
         target, options = self.focus(me, obs, threats, retreat, mode, item)
+        if not retreat and not urgent:
+            anchor = self.peek(me, obs, threats, target, mode, item)
+            if anchor is not None:
+                mode, goal, item = "peek", anchor, None
         movement, boost, jump, travel_yaw = self.movement(me, obs, threats, goal, mode, item, target, retreat, urgent)
         aim, fire = fire_control(me, options, target, retreat or urgent, hp)
         if aim is not None:
