@@ -17,9 +17,6 @@ python3 ../mechfight-kit/check/check.py --map-dir /arena -- \
 
 The replay check confirms that the bot speaks the protocol and responds in time. The official practice run measures placement over 48 scored matches.
 
-## Submit
-
-Put these files at the root of a **public** GitHub repository and submit its URL on the [Mech Royale track page](https://www.joinbuilders.org/buildathon/tracks/builders) while signed in as Urban-Ers. Keep the repository and submitted commit public through the final results. Submissions close Sunday, November 22 at 11:00 a.m. ET, which is Monday, November 23 at 3:00 a.m. AEDT.
 
 ## Credits
 
