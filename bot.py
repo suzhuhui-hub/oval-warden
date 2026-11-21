@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Armory"
+    name = "Oval Warden Courier"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -684,6 +684,11 @@ class Bot:
         projectiles = sorted(obs["projectiles"], key=lambda p: math.dist(p["pos"][:2], xy))[:16]
         projectiles = [p for p in projectiles if math.dist(p["pos"][:2], xy) < 120]
         max_step = math.dist(xy, waypoint)
+        collecting = mode in ("pickups","cubes","salvage") and not urgent
+        if collecting and goal_distance < 12 and self.arena.direct(xy, goal, radius):
+            waypoint = goal
+            angle = bearing(xy, goal)
+            max_step = goal_distance
         tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3}.get(mode, 1.8)
         if mode == "crates":
             tolerance = 27 if target and item and target["id"] == item["id"] else 2.5
@@ -702,7 +707,7 @@ class Bot:
         terrain_base = self.arena.terrain(*xy) if me["grounded"] else z
         chase_id = None
         preferred_range = 49
-        if target and target.get("kind") == "mech" and not retreat and not urgent and mode != "drop":
+        if target and target.get("kind") == "mech" and not retreat and not urgent and mode != "drop" and not collecting:
             if target.get("hp", 999) < 0.41 * me["hp"] and danger < 2.7:
                 chase_id = target["id"]
                 if any(w and w["kind"] == "lightning" for w in me["weapons"]):
@@ -742,7 +747,8 @@ class Bot:
                     for ox, oy in ((0, 0), (0.86, 0), (-0.86, 0), (0, 0.86), (0, -0.86))
                 )
             arrive = math.dist((sx, sy), waypoint)
-            value = (max_step - arrive) * (0.45 if urgent else 0.35)
+            value = (max_step - arrive) * (0.86 if collecting and goal_distance < 36 else
+                                           0.62 if collecting else 0.45 if urgent else 0.35)
             if not stop:
                 value += (dx * self.last_command[0] + dy * self.last_command[1]) * 0.42
             elif move == (0.0, 0.0):
