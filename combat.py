@@ -33,6 +33,21 @@ def target_center(target, config):
     return stats["radius"], stats["height"] * 0.5
 
 
+def future_target(target, eta, arena):
+    x, y, z = target["pos"]
+    vx, vy, vz = target.get("vel", (0, 0, 0))
+    ax, ay, az = target.get("accel", (0, 0, 0))
+    # Steering observations are most predictive over the next few decisions.
+    horizon = min(0.34, eta)
+    drift = horizon * (0.5 * horizon + 0.44 * (eta - horizon))
+    x += vx * eta + ax * drift
+    y += vy * eta + ay * drift
+    z += clamp(vz * eta + az * drift, -19, 14)
+    if arena and vz < -1:
+        z = max(z, arena.terrain(x, y))
+    return x, y, z
+
+
 def solution(me, target, weapon, config, arena):
     kind = weapon["kind"]
     stats = weapon["stats"]
@@ -41,7 +56,6 @@ def solution(me, target, weapon, config, arena):
     muzzle = me["stats"].get("muzzle_height", 7)
     source[2] += me["stats"]["height"] + 0.5 if kind == "mortar" else muzzle
     pos = target["pos"]
-    target_vel = target.get("vel", (0, 0, 0))
     rotation_delay = min(0.26, abs(angle_delta(bearing(source, pos), me["aim"][0])) / me["stats"]["turn_rate"])
     delay = clamp(weapon.get("cooldown", 0), 0, 0.075) + 0.035 + 0.40 * rotation_delay
     speed = stats.get("speed", config["weapons"][kind].get("speed", 0))
@@ -56,11 +70,9 @@ def solution(me, target, weapon, config, arena):
 
     for _ in range(7 if kind == "mortar" else 3):
         eta = travel + delay
-        # Limit vertical extrapolation for a jump already near its apex.
-        tz = pos[2] + half_height + clamp(target_vel[2] * eta, -14, 11)
-        if arena and target_vel[2] < -1:
-            tz = max(tz, arena.terrain(pos[0] + target_vel[0] * eta, pos[1] + target_vel[1] * eta) + half_height)
-        aim_pos = (pos[0] + target_vel[0] * eta, pos[1] + target_vel[1] * eta, tz)
+        tx, ty, tz = future_target(target, eta, arena)
+        tz += half_height
+        aim_pos = (tx, ty, tz)
         dx, dy = aim_pos[0] - source[0], aim_pos[1] - source[1]
         dz = tz - source[2] + 0.5 * gravity * travel * travel
         horizontal = math.hypot(dx, dy)
@@ -83,7 +95,18 @@ def solution(me, target, weapon, config, arena):
                 if arena.solid(source[0] + dx * f, source[1] + dy * f, arc_z):
                     return None
         elif not arena.visible(source, aim_pos):
-            return None
+            if kind == "lightning":
+                return None
+            # A roof line may hide the center while leaving part of the mech visible.
+            for lift in (0.57 * half_height, -0.50 * half_height):
+                adjusted = (aim_pos[0], aim_pos[1], aim_pos[2] + lift)
+                adjusted_pitch = math.atan2(adjusted[2] - source[2], horizontal)
+                if me["stats"]["min_pitch"] <= adjusted_pitch <= me["stats"]["max_pitch"] and arena.visible(source, adjusted):
+                    pitch = adjusted_pitch
+                    half_height *= 0.45
+                    break
+            else:
+                return None
 
     yaw_tolerance = math.atan2(radius * 0.81, max(1, horizontal))
     pitch_tolerance = math.atan2(half_height * 0.81, max(1, horizontal))

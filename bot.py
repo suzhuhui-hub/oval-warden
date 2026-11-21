@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v7"
+    name = "Oval Warden v8"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -28,6 +28,7 @@ class Bot:
         self.recovering = False
         self.cover_goal = None
         self.cover_refresh = 0
+        self.motion = {}
         self.circle_anchor = None
         self.anchor_time = 0
         self.last_target = None
@@ -103,6 +104,28 @@ class Bot:
             threats.append((weight, distance, enemy, aiming_at_us or attacker))
         threats.sort(key=lambda data: -data[0])
         return threats
+
+    def track_motion(self, obs):
+        now = obs["t"]
+        actors = []
+        for actor in obs["mechs"]:
+            track = self.motion.setdefault(actor["id"], deque(maxlen=7))
+            if track and now - track[-1][0] > 0.6:
+                track.clear()
+            if track and 0.13 < now - track[0][0] < 0.65:
+                old_time, old_velocity = track[0]
+                dt = now - old_time
+                ax, ay, az = ((a - b) / dt for a, b in zip(actor["vel"], old_velocity))
+                horizontal = math.hypot(ax, ay)
+                # Clip sudden wall collisions and keep useful changes of direction.
+                cap = min(1, 24 / max(1, horizontal))
+                acceleration = (ax * cap, ay * cap, clamp(az, -22, 18))
+                annotated = dict(actor, accel=acceleration)
+            else:
+                annotated = actor
+            track.append((now, actor["vel"]))
+            actors.append(annotated)
+        return {**obs, "mechs": actors}
 
     def weapon_priority(self, me, obs, kind):
         radius = obs["zone"]["next_radius"]
@@ -437,7 +460,25 @@ class Bot:
                 self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008)
                 self.replan = now + (0.65 if self.stuck > 4 else 2.2)
 
-    def projectile_cost(self, me, velocity, projectiles):
+    def mortar_impacts(self, projectiles):
+        gravity = self.config["weapons"]["mortar"]["gravity"]
+        impacts = []
+        for p in projectiles:
+            if p["kind"] != "mortar":
+                continue
+            px, py, pz = p["pos"]
+            vx, vy, vz = p["vel"]
+            for step in range(1, 11):
+                dt = 0.075 * step
+                x = px + vx * dt
+                y = py + vy * dt
+                z = pz + vz * dt - 0.5 * gravity * dt * dt
+                if not self.arena.in_bounds(x, y) or self.arena.solid(x, y, z):
+                    impacts.append((x, y, z, dt))
+                    break
+        return impacts
+
+    def projectile_cost(self, me, velocity, projectiles, impacts):
         cost = 0.0
         x, y, z = me["pos"]
         radius = me["stats"]["radius"] + 0.6
@@ -459,6 +500,12 @@ class Bot:
                     cost += 4.0 * max(0, (radius + 7 - separation) / (radius + 7))
             elif us_h - 0.6 < p_h < us_h + height + 0.6 and separation < radius + 1.5:
                 cost += 3.8 * (radius + 1.5 - separation) / (radius + 1.5)
+        for ix, iy, iz, time in impacts:
+            dx = x + velocity[0] * time - ix
+            dy = y + velocity[1] * time - iy
+            dz = max(z - iz, iz - (z + height), 0)
+            distance = math.hypot(dx, dy, dz)
+            cost += 8 * max(0, 1 - distance / (radius + 9))
         return cost
 
     def movement(self, me, obs, threats, goal, mode, item, target, retreat, urgent):
@@ -514,6 +561,7 @@ class Bot:
         angle = bearing(xy, waypoint)
         projectiles = sorted(obs["projectiles"], key=lambda p: math.dist(p["pos"][:2], xy))[:16]
         projectiles = [p for p in projectiles if math.dist(p["pos"][:2], xy) < 120]
+        impacts = self.mortar_impacts(projectiles)
         max_step = math.dist(xy, waypoint)
         tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3}.get(mode, 1.8)
         if mode == "crates":
@@ -618,7 +666,7 @@ class Bot:
                         primary = can_trade and enemy["id"] == target_id and not retreat
                         value += weight * (0.46 if primary else 3.8) * cover_bias
             if projectiles:
-                value -= self.projectile_cost(me, (vx, vy), projectiles) * 1.65
+                value -= self.projectile_cost(me, (vx, vy), projectiles, impacts) * 1.65
             return value
 
         movement = max(candidates, key=rate)
@@ -631,6 +679,7 @@ class Bot:
     def act(self, obs):
         me = obs["self"]
         now = obs["t"]
+        obs = self.track_motion(obs)
         self.update(me, obs)
         threats = self.assess_threats(me, obs)
         hp = me["hp"] / me["max_hp"]
