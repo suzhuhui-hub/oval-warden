@@ -82,6 +82,28 @@ class Arena:
                 clearance[i] = min(clearance[i], clearance[i + 1] + 1)
         self.clearance = clearance
 
+        self.perches = []
+        for prism in world["prisms"]:
+            if prism["kind"] != "building":
+                continue
+            ring, holes, top = prism["ring"], prism["holes"], prism["top"]
+            xs, ys = ring[::2], ring[1::2]
+            left, right, bottom, upper = min(xs), max(xs), min(ys), max(ys)
+            if min(right - left, upper - bottom) < 13:
+                continue
+            for fx, fy in ((0.5, 0.5), (0.33, 0.33), (0.67, 0.67), (0.33, 0.67), (0.67, 0.33)):
+                x, y = left + fx * (right - left), bottom + fy * (upper - bottom)
+                climb = top - self.terrain(x, y)
+                if not 12 <= climb <= 39 or self.solid(x, y, top + 0.6):
+                    continue
+                stable = all(
+                    inside(x + dx, y + dy, ring) and not any(inside(x + dx, y + dy, h) for h in holes)
+                    for dx, dy in ((0, 0), (5, 0), (-5, 0), (0, 5), (0, -5))
+                )
+                if stable:
+                    self.perches.append((x, y, top, climb))
+                    break
+
     def indices(self, x, y):
         return (
             max(0, min(self.nx - 1, int((x - self.x0) / self.cell))),
