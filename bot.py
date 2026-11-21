@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Armory"
+    name = "Oval Warden Circuit"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -316,6 +316,29 @@ class Bot:
                     self.last_goal = item_id
                     return mode, tuple(pos[:2]), urgent, item
             return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
+
+        best_capture = None
+        for _, _, _, pos, drop in candidates:
+            if drop.get("holder") not in (None, me["id"]):
+                continue
+            remaining = drop["capture_s"] - drop.get("progress", 0)
+            gap = max(0, math.dist(xy, pos[:2]) - drop["radius"] + 1)
+            run = gap / me["stats"]["boost_speed"]
+            complete_in = max(run, drop["lands_in"]) + remaining
+            if complete_in > (7.0 if hp < 0.80 else 5.4):
+                continue
+            protected = drop.get("holder") == me["id"] and remaining <= 1.2
+            contest = min((math.dist(e["pos"][:2], pos[:2]) for _, _, e, _ in threats), default=999)
+            if not protected and contest < drop["radius"] + 7.5 * complete_in:
+                continue
+            if gap > 3 and not self.arena.direct(xy, pos[:2], me["stats"]["radius"]):
+                continue
+            if best_capture is None or complete_in < best_capture[0]:
+                best_capture = complete_in, drop
+        if best_capture:
+            chosen = best_capture[1]
+            self.last_goal = chosen["id"]
+            return "drop", tuple(chosen["pos"][:2]), False, chosen
 
         if any(w is None for w in me["weapons"]):
             finish = self.duel_target and self.duel_target.get("hp", 1400) < 220
@@ -684,6 +707,11 @@ class Bot:
         projectiles = sorted(obs["projectiles"], key=lambda p: math.dist(p["pos"][:2], xy))[:16]
         projectiles = [p for p in projectiles if math.dist(p["pos"][:2], xy) < 120]
         max_step = math.dist(xy, waypoint)
+        collecting = mode in ("pickups","cubes","salvage") and not urgent
+        if collecting and goal_distance < 12 and self.arena.direct(xy, goal, radius):
+            waypoint = goal
+            angle = bearing(xy, goal)
+            max_step = goal_distance
         tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3}.get(mode, 1.8)
         if mode == "crates":
             tolerance = 27 if target and item and target["id"] == item["id"] else 2.5
@@ -702,7 +730,7 @@ class Bot:
         terrain_base = self.arena.terrain(*xy) if me["grounded"] else z
         chase_id = None
         preferred_range = 49
-        if target and target.get("kind") == "mech" and not retreat and not urgent and mode != "drop":
+        if target and target.get("kind") == "mech" and not retreat and not urgent and mode != "drop" and not collecting:
             if target.get("hp", 999) < 0.41 * me["hp"] and danger < 2.7:
                 chase_id = target["id"]
                 if any(w and w["kind"] == "lightning" for w in me["weapons"]):
@@ -742,7 +770,8 @@ class Bot:
                     for ox, oy in ((0, 0), (0.86, 0), (-0.86, 0), (0, 0.86), (0, -0.86))
                 )
             arrive = math.dist((sx, sy), waypoint)
-            value = (max_step - arrive) * (0.45 if urgent else 0.35)
+            value = (max_step - arrive) * (0.86 if collecting and goal_distance < 36 else
+                                           0.62 if collecting else 0.45 if urgent else 0.35)
             if not stop:
                 value += (dx * self.last_command[0] + dy * self.last_command[1]) * 0.42
             elif move == (0.0, 0.0):
