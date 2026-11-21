@@ -156,8 +156,8 @@ def fire_control(me, options, focused, evasive, hp_fraction):
         return None, [False, False]
     _, _, _, primary = max(options, key=lambda item: item[0])
     yaw, pitch = primary[:2]
-    stats = me["stats"]
-    pitch = clamp(pitch, stats["min_pitch"], stats["max_pitch"])
+    torso = me["stats"]
+    pitch = clamp(pitch, torso["min_pitch"], torso["max_pitch"])
     actual_yaw, actual_pitch = me["aim"]
     # The torso slews on each simulation step. Gate the shot on where it will
     # point when the weapon is ready, since the current aim is from the last step.
@@ -167,8 +167,8 @@ def fire_control(me, options, focused, evasive, hp_fraction):
         cooldown = weapon.get("cooldown", 0)
         kind = weapon["kind"]
         turn_time = 0.075 if cooldown > 0.055 and kind != "laser" else 0.038
-        predicted_yaw = actual_yaw + clamp(angle_delta(yaw, actual_yaw), -stats["turn_rate"] * turn_time, stats["turn_rate"] * turn_time)
-        predicted_pitch = actual_pitch + clamp(pitch - actual_pitch, -stats["pitch_rate"] * turn_time, stats["pitch_rate"] * turn_time)
+        predicted_yaw = actual_yaw + clamp(angle_delta(yaw, actual_yaw), -torso["turn_rate"] * turn_time, torso["turn_rate"] * turn_time)
+        predicted_pitch = actual_pitch + clamp(pitch - actual_pitch, -torso["pitch_rate"] * turn_time, torso["pitch_rate"] * turn_time)
         # A single torso controls both slots. The second shot must share the aim.
         shared = abs(angle_delta(yaw, expected_yaw)) <= tyaw and abs(pitch - expected_pitch) <= tpitch
         aligned = shared and abs(angle_delta(predicted_yaw, expected_yaw)) < tyaw + 0.008
