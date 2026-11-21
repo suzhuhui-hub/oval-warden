@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Rover"
+    name = "Oval Warden Atlas"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -584,8 +584,14 @@ class Bot:
             want_replan = self.route_goal != goal or now >= self.replan or not self.route
             if want_replan:
                 self.route_goal = goal
-                self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008,
-                                              goal_radius=circle_radius)
+                entry = self.arena.circle_entry(xy, goal, circle_radius, radius)
+                if entry and self.arena.direct(xy, entry, radius):
+                    self.route = [entry]
+                elif entry:
+                    self.route = self.arena.route(xy, entry, radius, perf_counter() + 0.008)
+                else:
+                    self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008,
+                                                  goal_radius=circle_radius)
                 self.replan = now + (0.7 if self.stuck > 4 else 2.3)
         else:
             self.ground_route(me, goal, elevated, now)
@@ -679,7 +685,7 @@ class Bot:
 
         waypoint = self.waypoint(me, obs, goal, elevated and self.jet_until > now,
                                  zone_route=mode == "zone" and urgent and me["grounded"]
-                                 and self.stuck > 4 and self.jet_until <= now)
+                                 and self.jet_until <= now)
         if mode == "zone" and urgent and me["grounded"] and now >= self.crossing_ready and me["energy"] > 56:
             self.crossing_ready = now + 1.4
             if goal_distance > 51 and self.jet_until <= now and (
