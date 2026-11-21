@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v7.1"
+    name = "Oval Warden v10"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -274,6 +274,25 @@ class Bot:
             if recover_position is not None:
                 candidates.append((79 if self.recovering else 60, -1, "cover", recover_position, None))
         else:
+            opening = now < 105 and me["cubes"] < 7
+            if opening and hp > 0.66 and not any(q[3] and q[1] < 78 for q in threats):
+                for drone in obs["mechs"]:
+                    if drone["kind"] != "npc":
+                        continue
+                    distance = math.dist(me["pos"], drone["pos"])
+                    if distance > 110 or self.safe(drone["pos"], me, obs) < 12:
+                        continue
+                    target_risk = sum(
+                        clamp((62 - math.dist(drone["pos"][:2], q[2]["pos"][:2])) / 62, 0, 1)
+                        for q in threats
+                    )
+                    if target_risk > 1.04:
+                        continue
+                    weak = clamp((310 - drone.get("hp", 350)) * 0.085, 0, 24)
+                    value = 121 + weak - distance * 0.44 - target_risk * 43
+                    if self.last_goal == drone["id"]:
+                        value += 17
+                    candidates.append((value, drone["id"], "drone", drone["pos"], drone))
             for item_id, (kind, item, _) in self.objects.items():
                 x, y, z = item["pos"]
                 distance = math.dist(xy, (x, y))
@@ -288,13 +307,15 @@ class Bot:
                     if item["kind"] == "laser":
                         value += 18
                 elif kind == "cubes":
-                    value = 126 if me["cubes"] < 3 else 104 if me["cubes"] < 10 else 59
+                    value = 156 if opening else 110 if me["cubes"] < 10 else 61
                 else:
                     if hp < 0.86 and now - self.last_damage < me["stats"]["regen_delay"] + 6:
                         continue
                     if any(q[1] < 64 and q[3] for q in threats):
                         continue
-                    value = 69 if me["cubes"] < 6 else 48 if me["cubes"] < 10 else 22
+                    value = 92 if opening else 58 if me["cubes"] < 10 else 25
+                    if opening:
+                        value += clamp((300 - item.get("hp", 300)) * 0.065, 0, 16)
                     value += 16 if any(w is None for w in me["weapons"]) else 0
                 value -= distance * 0.65 + max(0, abs(z - me["pos"][2]) - 3) * 1.8 + risk * 46
                 if self.last_goal == item_id:
@@ -366,8 +387,11 @@ class Bot:
     def focus(self, me, obs, threats, retreat, mode, item):
         combatants = []
         hp = me["hp"] / me["max_hp"]
+        farming = mode in ("crates", "drone", "cubes") and obs["t"] < 105 and me["cubes"] < 7
         for weight, distance, enemy, aggressive in threats[:6]:
             enemy_hp = enemy.get("hp", 999)
+            if farming and not aggressive and enemy_hp > 365 and distance > 43:
+                continue
             # A distant hit resets our own repair counter, even while behind cover.
             if retreat and (distance > 50 or enemy_hp > 335) and (distance > 33 or not aggressive):
                 continue
@@ -389,6 +413,10 @@ class Bot:
             _, target, options = max(combatants, key=lambda c: c[0])
             return target, options
         if mode == "crates" and item and math.dist(me["pos"], item["pos"]) < 82:
+            options = target_options(me, item, self.config, self.arena)
+            if options:
+                return item, options
+        if mode == "drone" and item and math.dist(me["pos"], item["pos"]) < 72:
             options = target_options(me, item, self.config, self.arena)
             if options:
                 return item, options
@@ -516,9 +544,9 @@ class Bot:
         projectiles = [p for p in projectiles if math.dist(p["pos"][:2], xy) < 120]
         max_step = math.dist(xy, waypoint)
         tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3}.get(mode, 1.8)
-        if mode == "crates":
-            tolerance = 27 if target and item and target["id"] == item["id"] else 2.5
-        stop = goal_distance < tolerance and (mode in ("drop", "endgame", "crates", "cover") or not close_threats)
+        if mode in ("crates", "drone"):
+            tolerance = (26 if mode == "crates" else 32) if target and item and target["id"] == item["id"] else 2.5
+        stop = goal_distance < tolerance and (mode in ("drop", "endgame", "crates", "cover", "drone") or not close_threats)
         candidates = [(0.0, 0.0)] if stop else []
         for i in range(-7, 9):
             yaw = angle + i * math.tau / 16
@@ -659,7 +687,8 @@ class Bot:
             aim = [bearing(me["pos"], threats[0][2]["pos"]), 0.0]
             self.last_target = None
         else:
-            scan = math.sin(now * 0.94 + me["id"]) * (0.95 if mode == "patrol" else 0.47)
+            scanning = mode in ("patrol", "drone", "crates") or now < 70 and not threats
+            scan = math.sin(now * 0.94 + me["id"]) * (1.31 if scanning else 0.51)
             aim = [travel_yaw + scan, -0.06]
             self.last_target = None
 
