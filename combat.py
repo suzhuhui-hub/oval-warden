@@ -43,7 +43,7 @@ def solution(me, target, weapon, config, arena):
     pos = target["pos"]
     target_vel = target.get("vel", (0, 0, 0))
     rotation_delay = min(0.26, abs(angle_delta(bearing(source, pos), me["aim"][0])) / me["stats"]["turn_rate"])
-    delay = 0.05 + 0.55 * rotation_delay
+    delay = clamp(weapon.get("cooldown", 0), 0, 0.075) + 0.035 + 0.40 * rotation_delay
     speed = stats.get("speed", config["weapons"][kind].get("speed", 0))
     gravity = stats.get("gravity", config["weapons"][kind].get("gravity", 0)) if kind == "mortar" else 0
     meters = math.dist(source, (pos[0], pos[1], pos[2] + half_height))
@@ -76,18 +76,17 @@ def solution(me, target, weapon, config, arena):
         return None
     if arena:
         if kind == "mortar":
-            peak = (
-                source[0] + dx * 0.5,
-                source[1] + dy * 0.5,
-                (source[2] + aim_pos[2]) * 0.5 + 0.125 * gravity * travel * travel,
-            )
-            if not (arena.visible(source, peak) and arena.visible(peak, aim_pos)):
-                return None
+            steps = max(3, math.ceil(horizontal / 3.8))
+            for i in range(1, steps):
+                f = i / steps
+                arc_z = source[2] + (aim_pos[2] - source[2]) * f + 0.5 * gravity * travel ** 2 * f * (1 - f)
+                if arena.solid(source[0] + dx * f, source[1] + dy * f, arc_z):
+                    return None
         elif not arena.visible(source, aim_pos):
             return None
 
     yaw_tolerance = math.atan2(radius * 0.81, max(1, horizontal))
-    pitch_tolerance = math.atan2(half_height * 0.85, max(1, horizontal))
+    pitch_tolerance = math.atan2(half_height * 0.81, max(1, horizontal))
     if kind == "lightning":
         yaw_tolerance = math.radians(stats.get("cone_deg", 30) * 0.36)
         pitch_tolerance = 2.0
@@ -134,16 +133,23 @@ def fire_control(me, options, focused, evasive, hp_fraction):
         return None, [False, False]
     _, _, _, primary = max(options, key=lambda item: item[0])
     yaw, pitch = primary[:2]
+    stats = me["stats"]
+    pitch = clamp(pitch, stats["min_pitch"], stats["max_pitch"])
+    actual_yaw, actual_pitch = me["aim"]
+    # The torso slews on each simulation step. Gate the shot on where it will
+    # point when the weapon is ready, since the current aim is from the last step.
     fire = [False, False]
     for _, slot, weapon, shot in options:
         expected_yaw, expected_pitch, tyaw, tpitch, _, meters = shot
         cooldown = weapon.get("cooldown", 0)
-        actual_yaw, actual_pitch = me["aim"]
         kind = weapon["kind"]
+        turn_time = 0.075 if cooldown > 0.055 and kind != "laser" else 0.038
+        predicted_yaw = actual_yaw + clamp(angle_delta(yaw, actual_yaw), -stats["turn_rate"] * turn_time, stats["turn_rate"] * turn_time)
+        predicted_pitch = actual_pitch + clamp(pitch - actual_pitch, -stats["pitch_rate"] * turn_time, stats["pitch_rate"] * turn_time)
         # A single torso controls both slots. The second shot must share the aim.
         shared = abs(angle_delta(yaw, expected_yaw)) <= tyaw and abs(pitch - expected_pitch) <= tpitch
-        aligned = shared and abs(angle_delta(actual_yaw, expected_yaw)) < tyaw + 0.025
-        aligned = aligned and abs(actual_pitch - expected_pitch) < tpitch + 0.025
+        aligned = shared and abs(angle_delta(predicted_yaw, expected_yaw)) < tyaw + 0.008
+        aligned = aligned and abs(predicted_pitch - expected_pitch) < tpitch + 0.008
         if kind == "laser":
             charge = weapon.get("charge", 0)
             stats = weapon["stats"]
@@ -151,9 +157,10 @@ def fire_control(me, options, focused, evasive, hp_fraction):
             full_damage = stats["damage"]
             if "mortar" in focused.get("weapons", ()):
                 full_damage *= 1 + stats.get("cookoff", 0.6)
-            fraction = (focused.get("hp", full_damage * 2) + 12) / max(1, full_damage)
-            if fraction < 0.86:
-                desired = max(stats["min_charge"], desired * clamp((fraction - 0.35) / 0.65, 0.18, 1))
+            min_frac = stats.get("min_frac", 0.35)
+            fraction = (focused.get("hp", full_damage * 2) + 18) / max(1, full_damage)
+            if fraction < 0.90:
+                desired = max(stats["min_charge"], desired * clamp((fraction - min_frac) / (1 - min_frac), 0, 1))
             if evasive and (hp_fraction < 0.58 or meters < 48):
                 desired = min(desired, max(stats["min_charge"], 0.30))
             if charge > 0:
