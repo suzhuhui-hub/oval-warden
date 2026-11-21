@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v7.1"
+    name = "Oval Warden v13"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -28,6 +28,8 @@ class Bot:
         self.recovering = False
         self.cover_goal = None
         self.cover_refresh = 0
+        self.crossing_ready = 0
+        self.crossing_top = None
         self.circle_anchor = None
         self.anchor_time = 0
         self.last_target = None
@@ -461,6 +463,27 @@ class Bot:
                 cost += 3.8 * (radius + 1.5 - separation) / (radius + 1.5)
         return cost
 
+    def crossing(self, me, goal):
+        x, y, z = me["pos"]
+        tx, ty = unit(goal[0] - x, goal[1] - y)
+        if math.dist((x, y), goal) < 35:
+            return None
+        obstacles = []
+        distance_to_first = math.inf
+        for distance in (5, 9, 13, 17, 22, 28, 35):
+            px, py = x + tx * distance, y + ty * distance
+            for base, top, ring, holes in self.arena.columns[self.arena.key(px, py)]:
+                if base < z + 8 and top > z + 3 and inside(px, py, ring) and not any(inside(px, py, h) for h in holes):
+                    obstacles.append(top)
+                    distance_to_first = min(distance_to_first, distance)
+        if not obstacles or distance_to_first > 23:
+            return None
+        height = max(obstacles) + 2.2
+        rise = height - z
+        if rise > 32 or me["energy"] < 2.0 * rise + 9:
+            return None
+        return height
+
     def movement(self, me, obs, threats, goal, mode, item, target, retreat, urgent):
         xy = me["pos"][:2]
         z = me["pos"][2]
@@ -468,6 +491,8 @@ class Bot:
         height, radius = me["stats"]["height"], me["stats"]["radius"]
         goal_distance = math.dist(xy, goal)
         hover_height = None
+        if self.jet_until <= now:
+            self.crossing_top = None
         if item and mode in ("cubes", "pickups") and item["pos"][2] > z + 3.5:
             hover_height = item["pos"][2] + 1.8
         if mode == "endgame" and not self.arena.clearance[self.arena.key(*goal)]:
@@ -486,6 +511,19 @@ class Bot:
         waypoint = self.waypoint(me, obs, goal, elevated and self.jet_until > now,
                                  zone_route=mode == "zone" and urgent and me["grounded"]
                                  and self.stuck > 4 and self.jet_until <= now)
+        if mode == "zone" and urgent and me["grounded"] and now >= self.crossing_ready and me["energy"] > 56:
+            self.crossing_ready = now + 1.4
+            if goal_distance > 51 and self.jet_until <= now and (
+                self.stuck >= 6 or abs(angle_delta(bearing(xy, waypoint), bearing(xy, goal))) > 0.78
+            ):
+                top = self.crossing(me, goal)
+                if top is not None:
+                    self.crossing_top = top
+                    self.crossing_ready = now + 7.1
+                    self.jet_until = now + min(4.35, (top - z) / 9.8 + 0.87)
+        if self.crossing_top is not None:
+            hover_height = self.crossing_top
+            waypoint = goal
         if mode in ("drop", "endgame") and math.dist(xy, goal) < (4.5 if mode == "drop" else 11):
             waypoint = goal
         walking = me["stats"]["walk_speed"]
