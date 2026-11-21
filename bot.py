@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pressure"
+    name = "Oval Warden Armory"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -317,6 +317,38 @@ class Bot:
                     return mode, tuple(pos[:2]), urgent, item
             return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
 
+        if any(w is None for w in me["weapons"]):
+            finish = self.duel_target and self.duel_target.get("hp", 1400) < 220
+            nearby = []
+            for kind, pickup, last_seen in self.objects.values():
+                if kind != "pickups" or pickup["kind"] == "gun" or now-last_seen > 7:
+                    continue
+                pos = pickup["pos"]
+                gap = math.dist(xy,pos[:2])
+                if gap > (24 if finish else 79) or abs(me["pos"][2]-pos[2]) > 4.5 or self.safe(pos,me,obs) < 10:
+                    continue
+                direct = self.arena.direct(xy,pos[:2],me["stats"]["radius"])
+                if not direct and gap > 48:
+                    continue
+                cost = gap / me["stats"]["boost_speed"] * (1.0 if direct else 1.7)
+                for _, distance, foe, active in threats[:3]:
+                    their_gap = math.dist(foe["pos"][:2],pos[:2])
+                    if active and "lightning" in foe.get("weapons", ()):
+                        cost += max(0,49-their_gap)*0.13
+                    if their_gap < gap and their_gap < 31:
+                        cost += 4
+                    if pickup["kind"] == "lightning" and "laser" in foe.get("weapons", ()) and their_gap < 60:
+                        cost -= 1.3
+                if pickup["kind"] == "laser":
+                    cost -= 0.85
+                if self.last_goal == pickup["id"]:
+                    cost -= 0.5
+                nearby.append((cost,pickup["id"],pickup))
+            if nearby:
+                score, pid, pickup = min(nearby, key=lambda entry: entry[:2])
+                if score <= (5.2 if self.duel_target is not None else 6.1):
+                    self.last_goal = pid
+                    return "pickups", tuple(pickup["pos"][:2]), False, pickup
         if self.salvage and me["cubes"] < 10:
             point = self.salvage[0]
             exposed = sum(1 for _, d, e, active in threats if active and d < 61)
