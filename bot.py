@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Duel"
+    name = "Oval Warden Collector"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -19,6 +19,8 @@ class Bot:
         self.route_goal = None
         self.replan = 0
         self.last_position = None
+        self.last_enemy_pos = {}
+        self.salvage = None
         self.last_command = (0, 0)
         self.stuck = 0
         self.last_attacker = None
@@ -53,6 +55,17 @@ class Bot:
     def update(self, me, obs):
         t = obs["t"]
         xy = me["pos"][:2]
+        for entity in obs["mechs"]:
+            if entity["kind"] == "mech":
+                self.last_enemy_pos[entity["id"]] = (tuple(entity["pos"]), t)
+        for event in obs["events"]:
+            if event["type"] == "kill" and event["target"] in self.last_enemy_pos:
+                where, seen = self.last_enemy_pos[event["target"]]
+                if t - seen <= 2.5 and math.dist(xy, where[:2]) < 106:
+                    self.salvage = (where, t + 10)
+        if self.salvage and (self.salvage[1] < t or (math.dist(xy,self.salvage[0][:2]) < 5
+                            and not any(math.dist(xy,c["pos"][:2]) < 20 for c in obs["cubes"]))):
+            self.salvage = None
         if self.last_position is not None:
             wants_motion = math.hypot(*self.last_command) > 0.75
             progress = math.dist(xy, self.last_position)
@@ -144,6 +157,15 @@ class Bot:
                 "mortar_splash": 6.3, "mortar_velocity": 6.25, "gun_velocity": 6.0,
                 "sensors": 5.7, "laser_pierce": 4.0, "lightning_chain": 3.8,
             }
+            kinds = {w["kind"] for w in me["weapons"] if w}
+            if "gun" in kinds:
+                gun = next(w for w in me["weapons"] if w and w["kind"] == "gun")
+                ratings["gun_mag"] = 11.3 if gun["stats"]["mag"] <= 12 else 9.6
+                ratings["gun_damage"] = 10.4 if len(kinds) == 1 else 9.3
+                ratings["gun_rate"] = 9.2 if len(kinds) == 1 else 8.5
+            if "lightning" in kinds:
+                ratings["lightning_range"] = 11.0
+            ratings["plating"] = 11.1 if me["hp"] < 0.6 * me["max_hp"] else 10.6
             action["pick"] = max(enumerate(offer["choices"]), key=lambda p: ratings.get(p[1]["id"], 0))[0]
 
         if obs["t"] - self.last_take < 0.25:
@@ -270,8 +292,23 @@ class Bot:
                     return mode, tuple(pos[:2]), urgent, item
             return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
 
+        if self.salvage and me["cubes"] < 10:
+            point = self.salvage[0]
+            exposed = sum(1 for _, d, e, active in threats if active and d < 61)
+            if exposed < 2 and self.safe(point, me, obs) > 11 and abs(point[2] - me["pos"][2]) < 9:
+                caches = [c for c in obs["cubes"] if math.dist(c["pos"],point) < 22]
+                item = min(caches, key=lambda c: math.dist(c["pos"],me["pos"])) if caches else {"pos":point}
+                return "salvage", tuple(item["pos"][:2]), False, item
         if self.duel_target is not None:
             enemy = self.duel_target
+            accessible = [obj for obj in obs["cubes"] if
+                          abs(obj["pos"][2] - me["pos"][2]) < 3.3
+                          and math.dist(xy, obj["pos"][:2]) < (24 if me["cubes"] < 3 else 14)
+                          and self.safe(obj["pos"], me, obs) > 8
+                          and self.arena.direct(xy, obj["pos"][:2], me["stats"]["radius"])]
+            if accessible:
+                cube = min(accessible, key=lambda obj: math.dist(xy, obj["pos"][:2]))
+                return "cubes", tuple(cube["pos"][:2]), False, cube
             # Grab a second weapon if it is only a few steps from our line of travel.
             if any(w is None for w in me["weapons"]):
                 nearby = [p for p in obs["pickups"] if math.dist(me["pos"], p["pos"]) <= 18]
@@ -282,6 +319,8 @@ class Bot:
             spacing = 31 if any(w and w["kind"] == "lightning" for w in me["weapons"]) else 63
             if "lightning" in enemy.get("weapons", ()) and spacing > 40:
                 spacing = 81
+            if enemy.get("hp", 1400) < min(me["hp"] * 0.46, 460) and me["cubes"] < 10:
+                spacing = min(spacing, 17 if "lightning" not in enemy.get("weapons", ()) else 32)
             away = bearing(enemy["pos"], xy)
             side = 1 if math.sin(me["id"] + int(now / 4.1)) >= 0 else -1
             tangent = side * clamp(12 / max(gap, 1), 0.10, 0.59)
@@ -521,6 +560,8 @@ class Bot:
         )
         boost = me["grounded"] and me["energy"] > 15 and (
             (urgent and goal_distance > 13) or
+            (mode == "salvage" and goal_distance > 8 and me["energy"] > 30) or
+            (mode == "pickups" and not all(me["weapons"]) and goal_distance > 8 and me["energy"] > 43) or
             (closing_laser and me["energy"] > 22) or
             (retreat and (danger > 0.8 or recent_damage) and me["energy"] > 24) or
             drop_sprint or (boost_burst and me["energy"] > 47 and danger > 1.05)
