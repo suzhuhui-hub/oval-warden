@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Arsenal"
+    name = "Oval Warden Pressure"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -37,6 +37,11 @@ class Bot:
         self.last_target = None
         self.last_goal = None
         self.duel_target = None
+        self.engaged_id = None
+        self.escape_check_until = -1
+        self.escape_foe = None
+        self.can_escape = False
+        self.recent_shooters = {}
         self.sound_tracks = [0.0] * 24
         self.last_sound_time = 0
         self.opening_yaw = None
@@ -450,7 +455,7 @@ class Bot:
         return self.circle_anchor
 
     def focus(self, me, obs, threats, retreat, mode, item):
-        if self.duel_target is not None and any(w and w["kind"] in ("laser","lightning") for w in me["weapons"]):
+        if self.duel_target is not None:
             options = target_options(me, self.duel_target, self.config, self.arena)
             if options:
                 return self.duel_target, options
@@ -760,6 +765,27 @@ class Bot:
             jump = me["grounded"] and not stop
         return movement, boost, jump, angle
 
+    def reachable_cover(self, me, obs, foe):
+        now = obs["t"]
+        if self.escape_foe == foe["id"] and now < self.escape_check_until:
+            return self.can_escape
+        self.escape_check_until, self.escape_foe = now + 1.0, foe["id"]
+        self.can_escape = False
+        origin = (*foe["pos"][:2], foe["pos"][2]+7)
+        xy = me["pos"][:2]
+        away = bearing(origin, xy)
+        for reach in (8, 15, 24):
+            for side in (0, -1, 1, -2, 2, -3, 3, 4):
+                angle = away + side*math.pi/4
+                p = (xy[0]+reach*math.cos(angle), xy[1]+reach*math.sin(angle))
+                if self.safe(p, me, obs) < 8 or not self.arena.direct(xy, p, me["stats"]["radius"]):
+                    continue
+                z = self.arena.terrain(*p)
+                if not self.arena.visible(origin, (*p, z+me["stats"]["height"]*0.62)):
+                    self.can_escape = True
+                    return True
+        return False
+
     def act(self, obs):
         me = obs["self"]
         now = obs["t"]
@@ -782,13 +808,52 @@ class Bot:
         kinds = {w["kind"] for w in me["weapons"] if w}
         reach = 244 if "laser" in kinds else 160 if "lightning" in kinds else 123
         close = [entry for entry in threats if entry[1] < max(reach, 137)]
-        opponents = [q for q in close if q[1] < 82 or q[3]]
-        track = close if len(close) == 1 else opponents
-        if len(track) == 1 and (len(close) == 1 or len(kinds) > 1) and obs["zone"]["radius"] >= 45:
-            _, distance, foe, _ = track[0]
-            damage_ratio = 1.42 if len(kinds) > 1 else 1.15
-            if distance < reach and (hp > 0.67 or me["hp"] * damage_ratio >= foe.get("hp", 1400)):
+        for e in obs["events"]:
+            if e["type"] == "damaged" and e.get("by") is not None:
+                self.recent_shooters[e["by"]] = now
+        choices = []
+        shooters = 0
+        our_muzzle = (*me["pos"][:2], me["pos"][2] + me["stats"]["muzzle_height"])
+        for _, distance, foe, _ in close[:7]:
+            if distance > reach:
+                continue
+            x, y, z = foe["pos"]
+            foe_size = 1 + self.config["cubes"]["size_per_cube"] * foe.get("cubes", 0)
+            if not self.arena.visible(our_muzzle, (x, y, z + 4.5 * foe_size)):
+                continue
+            face = abs(angle_delta(foe["aim"][0], bearing(foe["pos"], me["pos"])))
+            firing = now - self.recent_shooters.get(foe["id"], -100) < 3.8
+            closing = sum((me["pos"][k] - foe["pos"][k]) * foe["vel"][k] for k in (0,1)) / max(1, distance)
+            hostile = firing or (face < 0.30 and (closing > 1.3 or distance < 85 or foe.get("charging", False)))
+            shooters += hostile
+            damage_rate = 102 * (1.0 if distance < 80 else 0.78 if distance < 134 else 0.59)
+            if "laser" in kinds:
+                damage_rate += 127 * (1.6 if "mortar" in foe.get("weapons", ()) else 1)
+            if "lightning" in kinds and distance < 44:
+                damage_rate += 195
+            if "mortar" in kinds and distance < 130:
+                damage_rate += 74
+            damage_rate *= (1.50 if face > math.pi/2 + 0.10 else 1.0) * (1+0.04*min(me["cubes"], 10))
+            eta = foe.get("hp", 1400) / max(1, damage_rate)
+            turn = abs(angle_delta(me["aim"][0], bearing(me["pos"], foe["pos"]))) / me["stats"]["turn_rate"]
+            cost = eta + 1.5 * turn + max(0, distance-95)*0.022
+            if hostile:
+                cost *= 0.72
+            if self.engaged_id == foe["id"]:
+                cost -= 1.5
+            choices.append((cost, eta, distance, foe))
+        if choices and obs["zone"]["radius"] >= 40:
+            _, eta, distance, foe = min(choices, key=lambda q:q[0])
+            if len(close) == 1:
+                committed = hp > 0.67 or me["hp"] * (1.42 if len(kinds)>1 else 1.15) >= foe.get("hp",1400)
+            else:
+                committed = (shooters <= 1 and (hp > 0.38 or eta < 5.8)) or (
+                    shooters == 2 and (hp > 0.62 or eta < 4.4)) or eta < 2.4
+            if not committed and distance < 112 and (shooters < 2 or eta < 6.0):
+                committed = not self.reachable_cover(me, obs, foe)
+            if committed:
                 self.duel_target = foe
+                self.engaged_id = foe["id"]
                 retreat = self.recovering = False
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
         target, options = self.focus(me, obs, threats, retreat, mode, item)
