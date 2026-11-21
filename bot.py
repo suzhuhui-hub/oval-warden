@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Rally"
+    name = "Oval Warden Forager"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -420,6 +420,22 @@ class Bot:
             if recover_position is not None:
                 candidates.append((79 if self.recovering else 60, -1, "cover", recover_position, None))
         else:
+            if me["cubes"] < 6 and hp > 0.72 and not any(q[3] and q[1] < 115 for q in threats):
+                for drone in obs["mechs"]:
+                    if drone["kind"] != "npc":
+                        continue
+                    pos = drone["pos"]
+                    distance = math.dist(me["pos"], pos)
+                    if distance > 76 or abs(pos[2] - me["pos"][2]) > 4 or self.safe(pos, me, obs) < 12:
+                        continue
+                    if not self.arena.direct(xy, pos[:2], me["stats"]["radius"]):
+                        continue
+                    full_hp = drone.get("max_hp", self.config["npc"]["hp"])
+                    remaining = drone.get("hp", full_hp) / max(1, full_hp)
+                    value = 120 - distance * 0.55 - 17 * remaining
+                    if self.last_goal == drone["id"]:
+                        value += 8
+                    candidates.append((value, drone["id"], "drone", pos, drone))
             for item_id, (kind, item, _) in self.objects.items():
                 x, y, z = item["pos"]
                 distance = math.dist(xy, (x, y))
@@ -539,6 +555,10 @@ class Bot:
             _, target, options = max(combatants, key=lambda c: c[0])
             return target, options
         if mode == "crates" and item and math.dist(me["pos"], item["pos"]) < 82:
+            options = target_options(me, item, self.config, self.arena)
+            if options:
+                return item, options
+        if mode == "drone" and item:
             options = target_options(me, item, self.config, self.arena)
             if options:
                 return item, options
