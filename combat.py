@@ -151,46 +151,73 @@ def target_options(me, target, config, arena):
     return options
 
 
+def charge_needed(me, target, spec, evasive, hp_fraction, meters):
+    damage = spec["damage"]
+    if "mortar" in target.get("weapons", ()):
+        damage *= 1 + spec.get("cookoff", 0.6)
+    if "pos" in target and "aim" in target:
+        back = abs(angle_delta(target["aim"][0], bearing(target["pos"], me["pos"])))
+        if back > math.radians(102):
+            damage *= me["stats"].get("rear_mult", 1.5) * 0.95
+    floor = spec.get("min_frac", 0.35)
+    fraction = (target.get("hp", damage * 2) + 24) / max(1, damage)
+    desired = clamp((fraction - floor) / (1 - floor), 0, 1) * spec["charge"]
+    if evasive and (hp_fraction < 0.58 or meters < 48):
+        desired = min(desired, 0.30)
+    return max(spec["min_charge"], desired)
+
+
 def fire_control(me, options, focused, evasive, hp_fraction):
     if not options:
         return None, [False, False]
-    _, _, _, primary = max(options, key=lambda item: item[0])
-    yaw, pitch = primary[:2]
     torso = me["stats"]
-    pitch = clamp(pitch, torso["min_pitch"], torso["max_pitch"])
     actual_yaw, actual_pitch = me["aim"]
-    # The torso slews on each simulation step. Gate the shot on where it will
-    # point when the weapon is ready, since the current aim is from the last step.
-    fire = [False, False]
-    for _, slot, weapon, shot in options:
-        expected_yaw, expected_pitch, tyaw, tpitch, _, meters = shot
-        cooldown = weapon.get("cooldown", 0)
-        kind = weapon["kind"]
-        turn_time = 0.075 if cooldown > 0.055 and kind != "laser" else 0.038
-        predicted_yaw = actual_yaw + clamp(angle_delta(yaw, actual_yaw), -torso["turn_rate"] * turn_time, torso["turn_rate"] * turn_time)
-        predicted_pitch = actual_pitch + clamp(pitch - actual_pitch, -torso["pitch_rate"] * turn_time, torso["pitch_rate"] * turn_time)
-        # A single torso controls both slots. The second shot must share the aim.
-        shared = abs(angle_delta(yaw, expected_yaw)) <= tyaw and abs(pitch - expected_pitch) <= tpitch
-        aligned = shared and abs(angle_delta(predicted_yaw, expected_yaw)) < tyaw + 0.008
-        aligned = aligned and abs(predicted_pitch - expected_pitch) < tpitch + 0.008
-        if kind == "laser":
+    commands = [(shot[0], shot[1]) for _, _, _, shot in options]
+    if len(options) == 2:
+        a, b = options[0][3], options[1][3]
+        yaw_difference = angle_delta(b[0], a[0])
+        if abs(yaw_difference) <= a[2] + b[2] and abs(a[1] - b[1]) <= a[3] + b[3]:
+            fraction = a[2] / max(0.0001, a[2] + b[2])
+            overlap_pitch = (a[1] * b[3] + b[1] * a[3]) / (a[3] + b[3])
+            commands.append((a[0] + yaw_difference * fraction, overlap_pitch))
+
+    best = (-math.inf, None, None)
+    for yaw, raw_pitch in commands:
+        pitch = clamp(raw_pitch, torso["min_pitch"], torso["max_pitch"])
+        yaw_turn = angle_delta(yaw, actual_yaw)
+        pitch_turn = pitch - actual_pitch
+        score = -12 * abs(yaw_turn) - 4 * abs(pitch_turn)
+        fire = [False, False]
+        for value, slot, weapon, shot in options:
+            wanted_yaw, wanted_pitch, tol_yaw, tol_pitch, _, meters = shot
+            kind, cooldown = weapon["kind"], weapon.get("cooldown", 0)
             charge = weapon.get("charge", 0)
-            stats = weapon["stats"]
-            desired = stats["charge"]
-            full_damage = stats["damage"]
-            if "mortar" in focused.get("weapons", ()):
-                full_damage *= 1 + stats.get("cookoff", 0.6)
-            min_frac = stats.get("min_frac", 0.35)
-            fraction = (focused.get("hp", full_damage * 2) + 18) / max(1, full_damage)
-            if fraction < 0.90:
-                desired = max(stats["min_charge"], desired * clamp((fraction - min_frac) / (1 - min_frac), 0, 1))
-            if evasive and (hp_fraction < 0.58 or meters < 48):
-                desired = min(desired, max(stats["min_charge"], 0.30))
-            if charge > 0:
-                timeout = stats["charge"] + min(0.95, stats["hold_s"] * 0.65)
-                fire[slot] = charge < timeout and (charge < desired - 0.035 or not aligned)
-            elif cooldown <= 0.07 and shared:
-                fire[slot] = (not evasive or meters > 45 or hp_fraction > 0.45) and abs(angle_delta(actual_yaw, yaw)) < 0.52
-        elif aligned and cooldown < 0.105:
-            fire[slot] = kind != "gun" or (weapon.get("ammo", 0) > 0 and weapon.get("reload", 0) < 0.05)
-    return [yaw, pitch], fire
+            shared = abs(angle_delta(yaw, wanted_yaw)) <= tol_yaw and abs(pitch - wanted_pitch) <= tol_pitch
+            if shared:
+                score += value * (0.23 if not charge else 0.14)
+            turn_time = 0.075 if cooldown > 0.055 and kind != "laser" else 0.038
+            future_yaw = actual_yaw + clamp(yaw_turn, -torso["turn_rate"] * turn_time, torso["turn_rate"] * turn_time)
+            future_pitch = actual_pitch + clamp(pitch_turn, -torso["pitch_rate"] * turn_time, torso["pitch_rate"] * turn_time)
+            aligned = shared and abs(angle_delta(future_yaw, wanted_yaw)) < tol_yaw + 0.008
+            aligned = aligned and abs(future_pitch - wanted_pitch) < tol_pitch + 0.008
+            if kind == "laser":
+                spec = weapon["stats"]
+                desired = charge_needed(me, focused, spec, evasive, hp_fraction, meters)
+                if charge:
+                    timeout = spec["charge"] + min(0.85, spec["hold_s"] * 0.7)
+                    fire[slot] = charge < timeout and (charge < desired - 0.035 or not aligned)
+                    if not fire[slot] and aligned:
+                        score += value * 0.94
+                    elif shared and charge > desired - 0.11:
+                        score += value * 0.24
+                elif cooldown <= 0.07 and shared and abs(yaw_turn) < 0.54:
+                    fire[slot] = not evasive or meters > 45 or hp_fraction > 0.45
+                    if fire[slot]:
+                        score += value * 0.32
+            elif aligned and cooldown < 0.105:
+                fire[slot] = kind != "gun" or (weapon.get("ammo", 0) > 0 and weapon.get("reload", 0) < 0.05)
+                if fire[slot]:
+                    score += value * 0.70
+        if score > best[0]:
+            best = (score, [yaw, pitch], fire)
+    return best[1], best[2]

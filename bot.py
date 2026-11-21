@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v8"
+    name = "Oval Warden v9"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -132,7 +132,7 @@ class Bot:
         if kind == "laser":
             return 6.3
         if kind == "mortar":
-            return 4.0 if radius > 65 else 2.8
+            return 5.25 if radius > 42 else 4.3
         if kind == "lightning":
             return 5.1 if radius <= 125 else 3.8
         return 4.3 if radius > 70 else 4.1
