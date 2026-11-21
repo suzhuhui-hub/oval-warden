@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v4"
+    name = "Oval Warden v2"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -28,8 +28,6 @@ class Bot:
         self.recovering = False
         self.cover_goal = None
         self.cover_refresh = 0
-        self.perch = None
-        self.perch_refresh = 0
         self.last_target = None
         self.last_goal = None
         self.last_take = -100
@@ -109,7 +107,7 @@ class Bot:
         if kind == "laser":
             return 6.3
         if kind == "mortar":
-            return 5.1 if radius > 65 else 2.8
+            return 4.0 if radius > 65 else 2.8
         if kind == "lightning":
             return 5.1 if radius <= 125 else 3.8
         return 4.3 if radius > 70 else 4.1
@@ -215,38 +213,6 @@ class Bot:
         self.cover_goal = best_point
         return best_point
 
-    def rooftop(self, me, obs, threats):
-        if obs["t"] < 18 or not any(w and w["kind"] in ("laser", "mortar") for w in me["weapons"]):
-            return None
-        if obs["zone"]["next_radius"] < 48:
-            return None
-        now = obs["t"]
-        if now < self.perch_refresh:
-            return self.perch
-        self.perch_refresh = now + 1.8
-        self.perch = None
-        x, y, z = me["pos"]
-        energy = me["energy"]
-        possible = []
-        for roof in self.arena.perches:
-            px, py, pz, climb = roof
-            travel = math.hypot(x - px, y - py)
-            if travel > 118 or self.safe(roof, me, obs) < 25:
-                continue
-            if pz - z > 39 or (travel < 42 and energy < max(0, pz - z) * 1.55):
-                continue
-            danger = sum(0.9 + weight for weight, _, e, hostile in threats
-                         if hostile and abs(e["pos"][2] - pz) < 8
-                         and math.dist(e["pos"][:2], roof[:2]) < 52)
-            if danger >= 2.5:
-                continue
-            in_place = 25 if travel < 11 and abs(z - pz) < 3 else 0
-            value = 105 + min(climb, 30) * 0.62 - travel * 0.46 + in_place - 21 * danger
-            possible.append((value, roof))
-        if possible:
-            self.perch = max(possible)
-        return self.perch
-
     def goal(self, me, obs, threats, retreat):
         xy = me["pos"][:2]
         zone = obs["zone"]
@@ -290,10 +256,6 @@ class Bot:
             if recover_position is not None:
                 candidates.append((79 if self.recovering else 60, -1, "cover", recover_position, None))
         else:
-            perch = self.rooftop(me, obs, threats)
-            if perch:
-                value, roof = perch
-                candidates.append((value, -2, "roof", roof, {"pos": roof}))
             for item_id, (kind, item, _) in self.objects.items():
                 x, y, z = item["pos"]
                 distance = math.dist(xy, (x, y))
@@ -346,7 +308,7 @@ class Bot:
                 continue
             if (mode == "drop" or hp < 0.75) and not aggressive and distance > 75 and enemy.get("hp", 999) > 320:
                 continue
-            if not aggressive and distance > (160 if mode == "roof" else 120) and enemy.get("hp", 999) > 450:
+            if not aggressive and distance > 120 and enemy.get("hp", 999) > 450:
                 continue
             options = target_options(me, enemy, self.config, self.arena)
             if not options:
@@ -424,7 +386,7 @@ class Bot:
         height, radius = me["stats"]["height"], me["stats"]["radius"]
         goal_distance = math.dist(xy, goal)
         hover_height = None
-        if item and mode in ("cubes", "pickups", "roof") and item["pos"][2] > z + 3.5:
+        if item and mode in ("cubes", "pickups") and item["pos"][2] > z + 3.5:
             hover_height = item["pos"][2] + 1.8
         if mode == "endgame" and not self.arena.clearance[self.arena.key(*goal)]:
             roofs = [top for base, top, ring, holes in self.arena.columns[self.arena.key(*goal)]
@@ -440,7 +402,7 @@ class Bot:
             self.replan = 0
 
         waypoint = self.waypoint(me, obs, goal, elevated and self.jet_until > now)
-        if mode in ("drop", "endgame", "roof") and math.dist(xy, goal) < (4.5 if mode == "drop" else 11):
+        if mode in ("drop", "endgame") and math.dist(xy, goal) < (4.5 if mode == "drop" else 11):
             waypoint = goal
         walking = me["stats"]["walk_speed"]
         sprinting = me["stats"]["boost_speed"]
@@ -466,16 +428,16 @@ class Bot:
         projectiles = sorted(obs["projectiles"], key=lambda p: math.dist(p["pos"][:2], xy))[:16]
         projectiles = [p for p in projectiles if math.dist(p["pos"][:2], xy) < 120]
         max_step = math.dist(xy, waypoint)
-        tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3, "roof": 3.7}.get(mode, 1.8)
+        tolerance = {"endgame": 0.9, "drop": 2.4, "cover": 3.3}.get(mode, 1.8)
         if mode == "crates":
             tolerance = 27 if target and item and target["id"] == item["id"] else 2.5
-        stop = goal_distance < tolerance and (mode in ("drop", "endgame", "crates", "cover", "roof") or not close_threats)
+        stop = goal_distance < tolerance and (mode in ("drop", "endgame", "crates", "cover") or not close_threats)
         candidates = [(0.0, 0.0)] if stop else []
         for i in range(-7, 9):
             yaw = angle + i * math.tau / 16
             dx, dy = direction(yaw)
             # Slow down only when intentionally holding a precise point.
-            scale = clamp(max_step / 6.0, 0.24, 1) if mode in ("drop", "endgame", "cover", "roof") and max_step < 6 else 1
+            scale = clamp(max_step / 6.0, 0.24, 1) if mode in ("drop", "endgame", "cover") and max_step < 6 else 1
             candidates.append((dx * scale, dy * scale))
 
         # Estimate how much of the next movement is spent turning the legs.
@@ -510,10 +472,7 @@ class Bot:
             if not stop:
                 value += (dx * self.last_command[0] + dy * self.last_command[1]) * 0.42
             elif move == (0.0, 0.0):
-                value += 3.5 if mode in ("drop", "cover", "roof") else 1.45
-            if mode == "roof" and item and z >= item["pos"][2] - 0.8 and goal_distance < 11:
-                if not self.arena.solid(sx, sy, item["pos"][2] - 1):
-                    value -= 10
+                value += 3.5 if mode in ("drop", "cover") else 1.45
             if near_block or far_block:
                 value -= 5.0 * near_block + 3.5 * far_block
             if far_block and near_block and self.jet_until > now:
@@ -538,8 +497,7 @@ class Bot:
                         tx, ty = unit(ex - xy[0], ey - xy[1])
                         side = (vx * (-ty) + vy * tx) / max(1.0, speed)
                         orbit = math.sin(now * 2.2 + me["id"] * 0.91 + math.sin(now * 0.7))
-                        elevation = 1 + (abs(ez - z) / 13 if mode == "roof" else 0)
-                        value += (abs(side) * 1.10 * weight + side * orbit * 0.51 * weight) / elevation
+                        value += abs(side) * 1.10 * weight + side * orbit * 0.51 * weight
                         if enemy.get("charging"):
                             before = abs(angle_delta(enemy["aim"][0], bearing((ex, ey), xy)))
                             after = abs(angle_delta(enemy["aim"][0], bearing((ex, ey), (sx, sy))))
@@ -587,7 +545,7 @@ class Bot:
             self.last_target = None
         else:
             scan = math.sin(now * 0.94 + me["id"]) * (0.95 if mode == "patrol" else 0.47)
-            aim = [(now * 0.94 + me["id"]) % math.tau - math.pi, -0.25] if mode == "roof" else [travel_yaw + scan, -0.06]
+            aim = [travel_yaw + scan, -0.06]
             self.last_target = None
 
         action = {"tick": obs["tick"], "move": list(movement), "aim": aim, "fire": fire, "boost": boost, "jump": jump}
