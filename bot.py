@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Relay"
+    name = "Oval Warden Arsenal"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -111,6 +111,7 @@ class Bot:
 
     def assess_threats(self, me, obs):
         threats = []
+        has_long_laser = any(w and w["kind"] == "laser" for w in me["weapons"])
         attackers = {by for _, by, _ in self.incoming}
         our_pos = me["pos"]
         their_eye = self.config["mech"]["eye_height"]
@@ -119,7 +120,7 @@ class Bot:
             if enemy["kind"] != "mech":
                 continue
             distance = math.dist(me["pos"], enemy["pos"])
-            if distance > 185:
+            if distance > (280 if has_long_laser else 205):
                 continue
             yaw_error = abs(angle_delta(bearing(enemy["pos"], our_pos), enemy["aim"][0]))
             attacker = enemy["id"] in attackers
@@ -335,9 +336,15 @@ class Bot:
                     pick = min(nearby, key=lambda p: math.dist(me["pos"], p["pos"]))
                     return "pickups", tuple(pick["pos"][:2]), False, pick
             gap = math.dist(xy, enemy["pos"][:2])
-            spacing = 31 if any(w and w["kind"] == "lightning" for w in me["weapons"]) else 63
-            if "lightning" in enemy.get("weapons", ()) and spacing > 40:
-                spacing = 81
+            own = {w["kind"] for w in me["weapons"] if w}
+            their = enemy.get("weapons", ())
+            if "lightning" in own and ("laser" in their or "laser" not in own):
+                arc = next(w["stats"]["range"] for w in me["weapons"] if w and w["kind"] == "lightning")
+                spacing = min(arc * 0.70, 41)
+            elif "laser" in own:
+                spacing = 131 if "laser" not in their else 90
+            else:
+                spacing = 81 if "lightning" in their else 63
             if enemy.get("hp", 1400) < min(me["hp"] * 0.46, 460) and me["cubes"] < 10:
                 spacing = min(spacing, 17 if "lightning" not in enemy.get("weapons", ()) else 32)
             away = bearing(enemy["pos"], xy)
@@ -443,6 +450,10 @@ class Bot:
         return self.circle_anchor
 
     def focus(self, me, obs, threats, retreat, mode, item):
+        if self.duel_target is not None and any(w and w["kind"] in ("laser","lightning") for w in me["weapons"]):
+            options = target_options(me, self.duel_target, self.config, self.arena)
+            if options:
+                return self.duel_target, options
         combatants = []
         hp = me["hp"] / me["max_hp"]
         for weight, distance, enemy, aggressive in threats[:6]:
@@ -614,6 +625,10 @@ class Bot:
             me["energy"] > 64 or (me["energy"] > 33 and item and item["lands_in"] < 1.0)
         )
         boost = me["grounded"] and me["energy"] > 15 and (
+            (mode == "duel" and self.duel_target is not None and
+             any(w and w["kind"] == "lightning" for w in me["weapons"]) and
+             "laser" in self.duel_target.get("weapons", ()) and
+             math.dist(xy,self.duel_target["pos"][:2]) > 41 and me["energy"] > 43) or
             (urgent and goal_distance > 13) or
             (mode == "salvage" and goal_distance > 8 and me["energy"] > 30) or
             (mode == "pickups" and not all(me["weapons"]) and goal_distance > 8 and me["energy"] > 43) or
@@ -764,12 +779,15 @@ class Bot:
             self.recovering = self.recovering or not (finishable and hp >= 0.48 and pressure < 2.5)
         retreat = self.recovering or pressure > (3.7 if full_fight else 2.36)
         self.duel_target = None
-        close = [entry for entry in threats if entry[1] < 137]
-        if len(close) == 1 and obs["alive"] > 2 and obs["zone"]["radius"] >= 45:
-            _, distance, foe, _ = close[0]
-            armed = any(w and w["kind"] != "gun" for w in me["weapons"])
-            damage_ratio = 1.38 if armed else 1.15
-            if distance < 123 and (hp > 0.67 or me["hp"] * damage_ratio >= foe.get("hp", 1400)):
+        kinds = {w["kind"] for w in me["weapons"] if w}
+        reach = 244 if "laser" in kinds else 160 if "lightning" in kinds else 123
+        close = [entry for entry in threats if entry[1] < max(reach, 137)]
+        opponents = [q for q in close if q[1] < 82 or q[3]]
+        track = close if len(close) == 1 else opponents
+        if len(track) == 1 and (len(close) == 1 or len(kinds) > 1) and obs["zone"]["radius"] >= 45:
+            _, distance, foe, _ = track[0]
+            damage_ratio = 1.42 if len(kinds) > 1 else 1.15
+            if distance < reach and (hp > 0.67 or me["hp"] * damage_ratio >= foe.get("hp", 1400)):
                 self.duel_target = foe
                 retreat = self.recovering = False
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
