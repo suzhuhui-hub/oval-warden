@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v7.1"
+    name = "Oval Warden Duel"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -32,6 +32,7 @@ class Bot:
         self.anchor_time = 0
         self.last_target = None
         self.last_goal = None
+        self.duel_target = None
         self.last_take = -100
         self.objects = {}
         self.jet_until = 0
@@ -268,6 +269,26 @@ class Bot:
                     self.last_goal = item_id
                     return mode, tuple(pos[:2]), urgent, item
             return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
+
+        if self.duel_target is not None:
+            enemy = self.duel_target
+            # Grab a second weapon if it is only a few steps from our line of travel.
+            if any(w is None for w in me["weapons"]):
+                nearby = [p for p in obs["pickups"] if math.dist(me["pos"], p["pos"]) <= 18]
+                if nearby:
+                    pick = min(nearby, key=lambda p: math.dist(me["pos"], p["pos"]))
+                    return "pickups", tuple(pick["pos"][:2]), False, pick
+            gap = math.dist(xy, enemy["pos"][:2])
+            spacing = 31 if any(w and w["kind"] == "lightning" for w in me["weapons"]) else 63
+            if "lightning" in enemy.get("weapons", ()) and spacing > 40:
+                spacing = 81
+            away = bearing(enemy["pos"], xy)
+            side = 1 if math.sin(me["id"] + int(now / 4.1)) >= 0 else -1
+            tangent = side * clamp(12 / max(gap, 1), 0.10, 0.59)
+            desired = (enemy["pos"][0] + spacing * math.cos(away + tangent),
+                       enemy["pos"][1] + spacing * math.sin(away + tangent))
+            if self.safe(desired, me, obs) > 8:
+                return "duel", desired, False, enemy
 
         if retreat:
             recover_position = self.find_cover(me, obs, threats)
@@ -646,6 +667,15 @@ class Bot:
             finishable = any(d < 45 and e.get("hp", 999) < 220 for _, d, e, _ in threats)
             self.recovering = self.recovering or not (finishable and hp >= 0.48 and pressure < 2.5)
         retreat = self.recovering or pressure > (3.7 if full_fight else 2.36)
+        self.duel_target = None
+        close = [entry for entry in threats if entry[1] < 137]
+        if len(close) == 1 and obs["alive"] > 2 and obs["zone"]["radius"] >= 45:
+            _, distance, foe, _ = close[0]
+            armed = any(w and w["kind"] != "gun" for w in me["weapons"])
+            damage_ratio = 1.38 if armed else 1.15
+            if distance < 123 and (hp > 0.67 or me["hp"] * damage_ratio >= foe.get("hp", 1400)):
+                self.duel_target = foe
+                retreat = self.recovering = False
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
         target, options = self.focus(me, obs, threats, retreat, mode, item)
         movement, boost, jump, travel_yaw = self.movement(me, obs, threats, goal, mode, item, target, retreat, urgent)
@@ -668,7 +698,8 @@ class Bot:
         if gun and not gun.get("reload", 0):
             ammo = gun.get("ammo", 0)
             quiet = not target or mode == "cover" and now - self.last_exchange > 0.65
-            action["reload"] = ammo == 0 or (quiet and ammo < gun["stats"]["mag"] * 0.82)
+            quiet_for_reload = not close or now - self.last_exchange >= 2.1
+            action["reload"] = ammo == 0 or (quiet and quiet_for_reload and ammo < gun["stats"]["mag"] * 0.82)
         self.pick_actions(action, me, obs)
         return action
 
