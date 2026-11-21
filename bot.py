@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden v7.1"
+    name = "Oval Warden Hideaway"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -35,6 +35,8 @@ class Bot:
         self.last_take = -100
         self.objects = {}
         self.jet_until = 0
+        self.hide_point = None
+        self.hide_until = 0
         self.loot_radius = self.config["loot"]["pickup_radius"]
         self.decide_s = self.config["match"]["decide_every"] / self.config["match"]["tick_hz"]
 
@@ -215,6 +217,60 @@ class Bot:
         self.cover_goal = best_point
         return best_point
 
+    def shelter(self, me, obs, threats):
+        arena, zone = self.arena, obs["zone"]
+        now = obs["t"]
+        xy = me["pos"][:2]
+        enemies = [e for _, d, e, _ in threats if d < 155][:3]
+        if self.hide_point is not None and now < self.hide_until and self.safe(self.hide_point, me, obs) > 10:
+            return self.hide_point
+        self.hide_until = now + (1.4 if enemies else 4.0)
+        current = arena.key(*xy)
+        radius = me["stats"]["radius"]
+        minimum = arena.route_clearance(radius)
+        next_center = zone["next_center"]
+        choices = {current}
+        if self.hide_point is not None:
+            choices.add(arena.key(*self.hide_point))
+        for reach in (12, 26, 47, 76, 108):
+            for sector in range(16):
+                angle = sector * math.tau / 16 + (0.17 if reach in (26, 76) else 0)
+                x, y = xy[0] + reach * math.cos(angle), xy[1] + reach * math.sin(angle)
+                if arena.in_bounds(x, y, 5):
+                    choices.add(arena.key(x, y))
+
+        ranked = []
+        for index in choices:
+            if arena.clearance[index] < minimum:
+                continue
+            p = arena.center(index)
+            margin = self.safe(p, me, obs)
+            if margin < 11:
+                continue
+            dist = math.dist(xy, p)
+            future_margin = zone["next_radius"] - math.dist(p, next_center)
+            value = arena.shelter[index] * 1.35 - 0.17 * dist
+            value += min(0, future_margin - 15) * 0.52
+            # Favor the quiet side of the circle instead of converging on its middle.
+            value += min(math.dist(p, next_center), zone["next_radius"] * 0.82) * 0.075
+            for enemy in enemies:
+                gap = math.dist(p, enemy["pos"][:2])
+                value -= max(0, 84 - gap) * 0.42
+            if not arena.direct(xy, p, radius):
+                value -= 6
+            ranked.append((value, index))
+        best, self.hide_point = -math.inf, None
+        for value, index in sorted(ranked, reverse=True)[:9]:
+            p = arena.center(index)
+            body = (*p, arena.ground[index] + me["stats"]["height"] * 0.55)
+            for enemy in enemies:
+                x, y, z = enemy["pos"]
+                if arena.visible((x, y, z + 7), body):
+                    value -= 32
+            if value > best:
+                best, self.hide_point = value, p
+        return self.hide_point
+
     def goal(self, me, obs, threats, retreat):
         xy = me["pos"][:2]
         zone = obs["zone"]
@@ -234,6 +290,19 @@ class Bot:
         fallback = (ahead[0] + edge * vector[0], ahead[1] + edge * vector[1])
         if outside > 1:
             return "zone", self.circle_route(me, obs, threats, fallback, True), urgent, None
+
+        if not urgent and zone["next_radius"] >= 45 and obs["alive"] >= 4:
+            supplies_close = any(math.dist(xy, d["pos"][:2]) < 25 and d["lands_in"] < 6
+                                 for d in obs["drops"])
+            weapon_close = any(w is None for w in me["weapons"]) and any(
+                math.dist(me["pos"], obj["pos"]) < 29 for obj in obs["pickups"])
+            if not supplies_close and not weapon_close:
+                position = self.shelter(me, obs, threats)
+                if position is not None:
+                    self.last_goal = None
+                    if retreat:
+                        self.cover_goal = position
+                    return "cover", position, False, None
 
         candidates = []
         hp = me["hp"] / me["max_hp"]
@@ -368,6 +437,8 @@ class Bot:
         hp = me["hp"] / me["max_hp"]
         for weight, distance, enemy, aggressive in threats[:6]:
             enemy_hp = enemy.get("hp", 999)
+            if mode == "cover" and not aggressive and distance > 43 and enemy_hp > 280:
+                continue
             # A distant hit resets our own repair counter, even while behind cover.
             if retreat and (distance > 50 or enemy_hp > 335) and (distance > 33 or not aggressive):
                 continue

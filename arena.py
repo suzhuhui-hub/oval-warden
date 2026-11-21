@@ -81,6 +81,44 @@ class Arena:
             if i % self.nx < self.nx - 1:
                 clearance[i] = min(clearance[i], clearance[i + 1] + 1)
         self.clearance = clearance
+        self.shelter = self.shelter_map(world["trees"])
+
+    def shelter_map(self, trees):
+        """Count nearby blocked approaches and foliage overlapping a mech's body."""
+        scores = bytearray(len(self.clearance))
+        width, height = self.nx, self.ny
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)):
+            sight = bytearray([255]) * len(scores)
+            rows = range(height - 1, -1, -1) if dy > 0 else range(height)
+            cols = range(width - 1, -1, -1) if dx > 0 else range(width)
+            for y in rows:
+                for x in cols:
+                    i = y * width + x
+                    if not self.clearance[i]:
+                        sight[i] = 0
+                    elif 0 <= x + dx < width and 0 <= y + dy < height:
+                        steps = min(255, sight[i + dy * width + dx] + 1)
+                        sight[i] = steps
+                        distance = steps * (5.66 if dx and dy else self.cell)
+                        scores[i] += 4 if distance <= 32 else 2 if distance <= 65 else 0
+        fields, data = trees["fields"], trees["data"]
+        indexes = [fields.index(field) for field in ("crownX", "crownY", "z", "height", "crownBase", "crownR")]
+        for start in range(0, len(data), len(fields)):
+            x, y, base, top, crown_base, radius = [data[start + index] for index in indexes]
+            if radius < 2:
+                continue
+            left, bottom = self.indices(x - radius, y - radius)
+            right, upper = self.indices(x + radius, y + radius)
+            for iy in range(bottom, upper + 1):
+                for ix in range(left, right + 1):
+                    i = iy * width + ix
+                    sx, sy = self.center(i)
+                    if not self.clearance[i] or math.hypot(sx - x, sy - y) > radius * 0.87:
+                        continue
+                    low, high = self.ground[i] + 4, self.ground[i] + 9
+                    if base + crown_base <= low and base + top >= high:
+                        scores[i] = min(44, scores[i] + 5)
+        return scores
 
     def indices(self, x, y):
         return (
