@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pacer"
+    name = "Oval Warden Anchor"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -405,9 +405,17 @@ class Bot:
             elif "laser" in own:
                 spacing = 131 if "laser" not in their else 90
             else:
-                spacing = 81 if "lightning" in their else 63
+                # Save the short collection approach for quiet finishes. With more
+                # rivals nearby, keep enough room to rotate after the first elimination.
+                crowd = sum(d < 115 for _, d, _, _ in threats)
+                spacing = 116 if crowd > 1 or me["hp"] < 0.6 * me["max_hp"] else 72
+                if "lightning" in their:
+                    spacing = max(spacing, 82)
             if enemy.get("hp", 1400) < min(me["hp"] * 0.46, 460) and me["cubes"] < 10:
-                spacing = min(spacing, 17 if "lightning" not in enemy.get("weapons", ()) else 32)
+                crowded = any(other["id"] != enemy["id"] and distance < 115
+                              for _, distance, other, _ in threats)
+                if not crowded and me["hp"] > 0.52 * me["max_hp"]:
+                    spacing = min(spacing, 21 if "lightning" not in their else 34)
             away = bearing(enemy["pos"], xy)
             side = 1 if math.sin(me["id"] + int(now / 4.1)) >= 0 else -1
             tangent = side * clamp(12 / max(gap, 1), 0.10, 0.59)
