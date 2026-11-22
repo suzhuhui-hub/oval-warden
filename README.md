@@ -2,6 +2,8 @@
 
 Oval Warden is Urban-Ers’ Python entry for the 2026 Builders Buildathon Mech Royale track. It prioritizes placement. It uses the supplied arena geometry to route around buildings, forecasts the shrinking zone, and seeks power cubes and supply drops. When taking a fight, it leads moving targets, accounts for torso turn speed, and scores movement options for nearby threats and projectiles.
 
+Relief compares the remaining supply capture time with the nearest rival’s estimated arrival. Its movement accounts for braking distance inside the capture ring.
+
 ## Build and check
 
 Download and extract the starter kit from the [Mech Royale track page](https://www.joinbuilders.org/buildathon/tracks/builders). With the extracted kit next to this repository, run these commands in Bash from the repository root.
@@ -15,7 +17,7 @@ python3 ../mechfight-kit/check/check.py --map-dir /arena -- \
   -v "$PWD/../mechfight-kit/arena:/arena:ro" oval-warden
 ```
 
-The replay check confirms that the bot speaks the protocol and responds in time. The official practice run measures placement over 48 scored matches.
+The replay check confirms that the bot speaks the protocol and responds in time. The official practice run measures placement over 96 matches on fresh private random seeds in scorer version builders-4.
 
 
 ## Credits

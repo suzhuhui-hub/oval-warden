@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pacer"
+    name = "Oval Warden Relief"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -310,6 +310,28 @@ class Bot:
                 if self.last_goal == drop["id"]:
                     value += 18
                 candidates.append((value, drop["id"], "drop", drop["pos"], drop))
+
+        # A completed capture restores all health and energy. Keep a banked
+        # capture when the ring is safe and challengers cannot reach it in time.
+        for drop in obs["drops"]:
+            if drop.get("holder") != me["id"] or drop["lands_in"] > 0:
+                continue
+            remaining = max(0, drop["capture_s"] - drop.get("progress", 0))
+            if self.safe(drop["pos"], me, obs) <= 2 or remaining <= 0:
+                continue
+            center = drop["pos"][:2]
+            rival_eta = math.inf
+            for _, _, rival, _ in threats:
+                gap = math.dist(center, rival["pos"][:2])
+                if gap <= drop["radius"]:
+                    rival_eta = 0
+                    break
+                toward = unit(center[0] - rival["pos"][0], center[1] - rival["pos"][1])
+                closing = sum(a * b for a, b in zip(toward, rival["vel"][:2]))
+                rival_eta = min(rival_eta, (gap - drop["radius"]) / max(6, closing + 4))
+            if remaining < rival_eta:
+                self.last_goal = drop["id"]
+                return "drop", tuple(drop["pos"][:2]), urgent, drop
 
         if urgent:
             for value, item_id, mode, pos, item in sorted(candidates, key=lambda c: -c[0]):
@@ -788,6 +810,15 @@ class Bot:
             if edge < 9:
                 old = obs["zone"]["radius"] - math.dist(xy, obs["zone"]["center"])
                 value += (edge - old) * (0.4 if urgent else 0.28)
+            if mode == "drop" and item and item["lands_in"] < 0.8:
+                # Move freely inside the ring. Allow for braking distance at its edge.
+                cx, cy = item["pos"][:2]
+                ring = item["radius"]
+                future_radius = math.hypot(sx - cx, sy - cy)
+                if goal_distance <= ring:
+                    value -= 4.0 * max(0, future_radius - (ring - 1.5))
+                    if future_radius < ring - 1.5 and goal_distance > 2:
+                        value += min(2.0, future_radius * 0.45)
             if close_threats:
                 for weight, distance, enemy, hostile in close_threats:
                     ex, ey, ez = enemy["pos"]
