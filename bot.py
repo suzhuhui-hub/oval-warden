@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pacer"
+    name = "Oval Warden Intermission"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -924,6 +924,21 @@ class Bot:
                 self.engaged_id = foe["id"]
                 retreat = self.recovering = False
         mode, goal, urgent, item = self.goal(me, obs, threats, retreat)
+        if mode == "duel" and kinds == {"gun"} and not urgent:
+            primary = next(w for w in me["weapons"] if w)
+            remaining = primary.get("reload", 0)
+            if primary.get("ammo", 0) == 0 and not remaining:
+                remaining = primary["stats"]["reload"]
+            if remaining > 0.55 and pressure > 0.45:
+                shelter = self.find_cover(me, obs, threats)
+                if shelter is not None and self.arena.direct(me["pos"][:2], shelter, me["stats"]["radius"]):
+                    walk = math.dist(me["pos"][:2], shelter) / me["stats"]["boost_speed"]
+                    point = (*shelter, self.arena.terrain(*shelter) + me["stats"]["height"] * 0.55)
+                    if walk < remaining + 0.25 and any(
+                        near and not self.arena.visible((*rival["pos"][:2], rival["pos"][2] + 7), point)
+                        for _, _, rival, near in threats[:2]
+                    ):
+                        mode, goal, item, retreat = "cover", shelter, None, True
         target, options = self.focus(me, obs, threats, retreat, mode, item)
         movement, boost, jump, travel_yaw = self.movement(me, obs, threats, goal, mode, item, target, retreat, urgent)
         aim, fire = fire_control(me, options, target, retreat or urgent, hp)
