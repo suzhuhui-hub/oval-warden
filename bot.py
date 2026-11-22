@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Breakaway"
+    name = "Oval Warden Switchyard"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -715,6 +715,21 @@ class Bot:
         lone_duel = (mode == "duel" and len(close_threats) == 1 and close_threats[0][3]
                      and all(w is None or w["kind"] == "gun" for w in me["weapons"]))
         mobile_duel = lone_duel and not self.sprint_recharging
+        arc = next((slot for slot in me["weapons"] if slot and slot["kind"] == "lightning"), None)
+        use_close_range = False
+        if mode == "duel" and arc and self.duel_target and len(close_threats) <= 2:
+            enemy = self.duel_target
+            gap = math.dist(xy, enemy["pos"][:2])
+            arc_range = arc["stats"]["range"]
+            # Spend energy getting into arc range only when a short boost can
+            # reach it and enough energy will remain for several uses.
+            use_close_range = (
+                arc_range - 2 < gap < arc_range + 21
+                and me["energy"] > 60
+                and goal_distance > 12
+                and enemy.get("hp", 1400) > 200
+                and self.arena.direct(xy, waypoint, radius)
+            )
         drop_sprint = mode == "drop" and goal_distance > 23 and (
             me["energy"] > 64 or (me["energy"] > 33 and item and item["lands_in"] < 1.0)
         )
@@ -728,7 +743,7 @@ class Bot:
             (mode == "pickups" and not all(me["weapons"]) and goal_distance > 8 and me["energy"] > 43) or
             (closing_laser and me["energy"] > 22) or
             (retreat and (danger > 0.8 or recent_damage) and me["energy"] > 24) or
-            drop_sprint or mobile_duel or (boost_burst and me["energy"] > 47 and danger > 1.05)
+            drop_sprint or mobile_duel or use_close_range or (boost_burst and me["energy"] > 47 and danger > 1.05)
         )
         if not me["grounded"] or self.jet_until > now:
             boost = self.jet_until > now and me["energy"] > 5 and (

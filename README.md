@@ -2,7 +2,7 @@
 
 Oval Warden is Urban-Ers’ Python entry for the 2026 Builders Buildathon Mech Royale track. It prioritizes placement. It uses the supplied arena geometry to route around buildings, forecasts the shrinking zone, and seeks power cubes and supply drops. When taking a fight, it leads moving targets, accounts for torso turn speed, and scores movement options for nearby threats and projectiles.
 
-Breakaway detects when a ground route stalls during a circle rotation and looks for accessible ground before replanning.
+Switchyard detects when a ground route stalls during a circle rotation and looks for accessible ground before replanning. It also uses short boosts into lightning range when enough energy remains for several shots.
 
 ## Build and check
 
