@@ -88,8 +88,9 @@ def solution(me, target, weapon, config, arena):
     yaw_tolerance = math.atan2(radius * 0.81, max(1, horizontal))
     pitch_tolerance = math.atan2(half_height * 0.81, max(1, horizontal))
     if kind == "lightning":
-        yaw_tolerance = math.radians(stats.get("cone_deg", 30) * 0.36)
-        pitch_tolerance = 2.0
+        # This slot uses a horizontal cone; the other slot can aim anywhere inside it.
+        yaw_tolerance = math.radians(stats.get("cone_deg", 30)) * 0.9
+        pitch_tolerance = math.pi
     return math.atan2(dy, dx), pitch, yaw_tolerance, pitch_tolerance, travel, meters
 
 
@@ -131,7 +132,23 @@ def target_options(me, target, config, arena):
 def fire_control(me, options, focused, evasive, hp_fraction):
     if not options:
         return None, [False, False]
-    _, _, _, primary = max(options, key=lambda item: item[0])
+    _, _, preferred, primary = max(options, key=lambda item: item[0])
+    if preferred["kind"] == "lightning":
+        for _, _, other, shot in options:
+            if (other["kind"] == "gun" and other.get("ammo", 0) and not other.get("reload", 0)
+                    and other["cooldown"] < 0.105 and abs(angle_delta(shot[0], primary[0])) < primary[2]):
+                primary = shot
+                break
+    elif preferred["kind"] == "laser":
+        # Charging occupies a trigger for several game ticks, but it does not
+        # reserve the shared torso. Let the gun use the early charge interval.
+        charge = preferred.get("charge", 0)
+        if 0 < charge < preferred["stats"]["min_charge"] and not evasive:
+            for _, _, other, shot in options:
+                if (other["kind"] == "gun" and other.get("ammo", 0) and not other.get("reload", 0)
+                        and other["cooldown"] < 0.105):
+                    primary = shot
+                    break
     yaw, pitch = primary[:2]
     torso = me["stats"]
     pitch = clamp(pitch, torso["min_pitch"], torso["max_pitch"])

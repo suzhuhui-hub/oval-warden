@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pacer"
+    name = "Oval Warden Arcade"
 
     def __init__(self, hello):
         self.config = hello["config"]
