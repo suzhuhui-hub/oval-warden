@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pacer"
+    name = "Oval Warden Breakaway"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -33,6 +33,7 @@ class Bot:
         self.crossing_ready = 0
         self.sprint_recharging = False
         self.crossing_top = None
+        self.wall_escape = None
         self.circle_anchor = None
         self.anchor_time = 0
         self.last_target = None
@@ -673,6 +674,31 @@ class Bot:
         if self.crossing_top is not None:
             hover_height = self.crossing_top
             waypoint = goal
+        if mode == "zone" and urgent and self.crossing_top is None:
+            if self.wall_escape and now >= self.wall_escape[0]:
+                self.wall_escape = None
+            if self.stuck > 12 and self.wall_escape is None and self.jet_until <= now:
+                # Turn away from an obstructed route long enough to reach open ground.
+                # With several nearby choices, prefer the one closer to the next circle.
+                options = []
+                available = tuple(direction(i * math.tau / 12) for i in range(12))
+                for dx, dy in available:
+                    point = (xy[0] + 21*dx, xy[1] + 21*dy)
+                    if not self.arena.in_bounds(*point, radius):
+                        continue
+                    if not all(self.arena.walkable(xy[0] + n*dx, xy[1] + n*dy,
+                                   max(z, self.arena.terrain(xy[0]+n*dx,xy[1]+n*dy)), height) for n in (3,7,12,17,21)):
+                        continue
+                    clearance = self.arena.clearance[self.arena.key(*point)]
+                    mag = math.dist(point, obs["zone"]["next_center"])
+                    options.append((mag - 3*clearance, point))
+                if options:
+                    self.wall_escape = (now + 1.15, min(options)[1])
+                    self.replan = 0
+            if self.wall_escape:
+                waypoint = self.wall_escape[1]
+        else:
+            self.wall_escape = None
         if mode in ("drop", "endgame") and math.dist(xy, goal) < (4.5 if mode == "drop" else 11):
             waypoint = goal
         walking = me["stats"]["walk_speed"]
