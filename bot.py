@@ -10,7 +10,7 @@ import mechfight
 
 
 class Bot:
-    name = "Oval Warden Pacer"
+    name = "Oval Warden Oasis"
 
     def __init__(self, hello):
         self.config = hello["config"]
@@ -311,6 +311,28 @@ class Bot:
                     value += 18
                 candidates.append((value, drop["id"], "drop", drop["pos"], drop))
 
+        # A completed capture restores all health and energy. Keep a banked
+        # capture when the ring is safe and challengers cannot reach it in time.
+        for drop in obs["drops"]:
+            if drop.get("holder") != me["id"] or drop["lands_in"] > 0:
+                continue
+            remaining = max(0, drop["capture_s"] - drop.get("progress", 0))
+            if self.safe(drop["pos"], me, obs) <= 2 or remaining <= 0:
+                continue
+            center = drop["pos"][:2]
+            rival_eta = math.inf
+            for _, _, rival, _ in threats:
+                gap = math.dist(center, rival["pos"][:2])
+                if gap <= drop["radius"]:
+                    rival_eta = 0
+                    break
+                toward = unit(center[0] - rival["pos"][0], center[1] - rival["pos"][1])
+                closing = sum(a * b for a, b in zip(toward, rival["vel"][:2]))
+                rival_eta = min(rival_eta, (gap - drop["radius"]) / max(6, closing + 4))
+            if remaining < rival_eta:
+                self.last_goal = drop["id"]
+                return "drop", tuple(drop["pos"][:2]), urgent, drop
+
         if urgent:
             for value, item_id, mode, pos, item in sorted(candidates, key=lambda c: -c[0]):
                 if value > 57 and math.dist(pos[:2], ahead) < zone["next_radius"] - 18:
@@ -564,15 +586,25 @@ class Bot:
             want_replan = self.route_goal != goal or now >= self.replan or not self.route
             if want_replan:
                 self.route_goal = goal
-                self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008,
-                                              goal_radius=circle_radius)
+                entry = self.arena.circle_entry(xy, goal, circle_radius, radius)
+                if entry and self.arena.direct(xy, entry, radius):
+                    self.route = [entry]
+                elif entry:
+                    self.route = self.arena.route(xy, entry, radius, perf_counter() + 0.008)
+                else:
+                    self.route = self.arena.route(xy, goal, radius, perf_counter() + 0.008,
+                                                  goal_radius=circle_radius)
                 self.replan = now + (0.7 if self.stuck > 4 else 2.3)
         else:
             self.ground_route(me, goal, elevated, now)
         while len(self.route) > 1 and math.dist(xy, self.route[0]) < 4.2:
             self.route.pop(0)
-        if len(self.route) > 2 and self.arena.direct(xy, self.route[2], radius):
-            del self.route[:2]
+        # Skip nearby grid corners only while the mech has a clear path across them.
+        # Looking beyond two cells gives it room to brake before a real turn.
+        for offset in range(min(len(self.route) - 1, 12), 0, -1):
+            if self.arena.direct(xy, self.route[offset], radius):
+                del self.route[:offset]
+                break
         return self.route[0] if self.route else goal
 
     def ground_route(self, me, goal, elevated, now):
@@ -659,7 +691,7 @@ class Bot:
 
         waypoint = self.waypoint(me, obs, goal, elevated and self.jet_until > now,
                                  zone_route=mode == "zone" and urgent and me["grounded"]
-                                 and self.stuck > 4 and self.jet_until <= now)
+                                 and self.jet_until <= now)
         if mode == "zone" and urgent and me["grounded"] and now >= self.crossing_ready and me["energy"] > 56:
             self.crossing_ready = now + 1.4
             if goal_distance > 51 and self.jet_until <= now and (
@@ -788,6 +820,15 @@ class Bot:
             if edge < 9:
                 old = obs["zone"]["radius"] - math.dist(xy, obs["zone"]["center"])
                 value += (edge - old) * (0.4 if urgent else 0.28)
+            if mode == "drop" and item and item["lands_in"] < 0.8:
+                # Move freely inside the ring. Allow for braking distance at its edge.
+                cx, cy = item["pos"][:2]
+                ring = item["radius"]
+                future_radius = math.hypot(sx - cx, sy - cy)
+                if goal_distance <= ring:
+                    value -= 4.0 * max(0, future_radius - (ring - 1.5))
+                    if future_radius < ring - 1.5 and goal_distance > 2:
+                        value += min(2.0, future_radius * 0.45)
             if close_threats:
                 for weight, distance, enemy, hostile in close_threats:
                     ex, ey, ez = enemy["pos"]

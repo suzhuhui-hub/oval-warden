@@ -81,6 +81,54 @@ class Arena:
             if i % self.nx < self.nx - 1:
                 clearance[i] = min(clearance[i], clearance[i + 1] + 1)
         self.clearance = clearance
+        # Each match uses the same geometry throughout. Pay for building the graph
+        # during the hello budget so a long detour can fit within a decision tick.
+        self.centers = [self.center(i) for i in range(count)]
+        self.edges = [[] for _ in range(count)]
+        offsets = ((-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1))
+        for i, space in enumerate(clearance):
+            if not space:
+                continue
+            y, x = divmod(i, self.nx)
+            for dx, dy in offsets:
+                if not (0 <= x+dx < self.nx and 0 <= y+dy < self.ny):
+                    continue
+                j = i + dx + dy*self.nx
+                width = min(space, clearance[j])
+                if dx and dy:
+                    width = min(width, clearance[i+dx], clearance[i+dy*self.nx])
+                if width and abs(self.ground[j]-self.ground[i]) <= 3.4:
+                    length = math.sqrt(2) if dx and dy else 1.0
+                    self.edges[i].append((j, width, length, length+0.32/clearance[j]))
+        self.landmarks = []
+        self.landmark_paths = []
+        open_cells = [i for i, space in enumerate(clearance) if space >= 2]
+        if open_cells:
+            pivot = self.nearest((self.x0+self.x1)/2, (self.y0+self.y1)/2, 2)
+            if clearance[pivot] < 2:
+                pivot = open_cells[0]
+            separation = [math.inf] * count
+            for _ in range(6):
+                distances = [math.inf] * count
+                toward = array("i", [-1]) * count
+                distances[pivot] = 0.0
+                heap = [(0.0,pivot)]
+                while heap:
+                    cost, vertex = heapq.heappop(heap)
+                    if cost != distances[vertex]:
+                        continue
+                    for neighbor, width, length, _ in self.edges[vertex]:
+                        candidate = cost + length
+                        if width >= 2 and candidate < distances[neighbor]:
+                            distances[neighbor] = candidate
+                            toward[neighbor] = vertex
+                            heapq.heappush(heap, (candidate,neighbor))
+                self.landmarks.append(array("f", distances))
+                self.landmark_paths.append(toward)
+                reachable = [i for i in open_cells if distances[i] < math.inf]
+                for i in reachable:
+                    separation[i] = min(separation[i], distances[i])
+                pivot = max(reachable, key=separation.__getitem__)
 
     def indices(self, x, y):
         return (
@@ -169,6 +217,53 @@ class Arena:
     def route_clearance(self, radius):
         return max(1, math.ceil((radius + 1.8) / self.cell))
 
+    def landmark_detour(self, start, finish):
+        """Use a shared branch of a shortest-path tree if this tick's A* is unfinished."""
+        best = None
+        best_length = math.inf
+        for distance, toward in zip(self.landmarks, self.landmark_paths):
+            if not math.isfinite(distance[start]) or not math.isfinite(distance[finish]):
+                continue
+            a, b = start, finish
+            prefix, suffix = [], []
+            while a != b:
+                if distance[a] >= distance[b]:
+                    prefix.append(a)
+                    a = toward[a]
+                else:
+                    suffix.append(b)
+                    b = toward[b]
+            length = distance[start] + distance[finish] - 2*distance[a]
+            if length < best_length:
+                best_length = length
+                best = prefix + [a] + suffix[::-1]
+        return best
+
+    def circle_entry(self, source, center, circle_radius, radius):
+        start = self.nearest(*source, self.route_clearance(radius), max_ring=4)
+        guides = [(table, table[start]) for table in self.landmarks if math.isfinite(table[start])]
+        if not guides or self.route_clearance(radius) != 2:
+            return None
+        best = math.inf
+        selected = None
+        angle = math.atan2(source[1]-center[1], source[0]-center[0])
+        for fraction in (0.99, 0.76, 0.44, 0):
+            for offset in range(24 if fraction else 1):
+                theta = angle + math.tau*offset/24
+                x = center[0]+circle_radius*fraction*math.cos(theta)
+                y = center[1]+circle_radius*fraction*math.sin(theta)
+                point = self.key(x,y)
+                if self.clearance[point] < 2 or not math.isfinite(guides[0][0][point]):
+                    continue
+                target = self.centers[point]
+                if math.dist(target,center)>circle_radius:
+                    continue
+                lower = max(abs(table[point]-d) for table,d in guides) * self.cell
+                score = max(lower,math.dist(source,target)) + 2.0/self.clearance[point]
+                if score < best:
+                    selected,best = target,score
+        return selected
+
     def route(self, source, goal, radius, stop_at, goal_radius=0.0):
         """Return a short list of waypoints, even if this tick only finds a partial path."""
         minimum = self.route_clearance(radius)
@@ -176,17 +271,23 @@ class Arena:
         finish = self.nearest(*goal, minimum) if not goal_radius else None
         finish_x, finish_y = self.center(finish) if finish is not None else goal
 
+        guides = [(table, table[finish]) for table in self.landmarks
+                  if finish is not None and minimum >= 2 and math.isfinite(table[finish])
+                  and math.isfinite(table[start])]
+
         def estimate(index):
-            x, y = self.center(index)
+            x, y = self.centers[index]
             remaining = math.hypot(x - finish_x, y - finish_y) - goal_radius
-            return max(0, remaining) / self.cell
+            h = max(0, remaining / self.cell)
+            for table, end in guides:
+                h = max(h, abs(table[index]-end))
+            return h
 
         open_set = [(estimate(start), 0, start)]
         distance = {start: 0}
         parent = {}
         best = start
         best_h = estimate(start)
-        offsets = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
         for count in range(3500):
             if not open_set or (count % 64 == 0 and perf_counter() > stop_at):
                 break
@@ -198,21 +299,22 @@ class Arena:
                 best_h, best = h, i
             if i == finish or (goal_radius and h == 0):
                 break
-            iy, ix = divmod(i, self.nx)
-            for dx, dy in offsets:
-                jx, jy = ix + dx, iy + dy
-                if not (0 <= jx < self.nx and 0 <= jy < self.ny):
+            for j, width, _, weight in self.edges[i]:
+                if width < minimum:
                     continue
-                j = jy * self.nx + jx
-                if self.clearance[j] < minimum or abs(self.ground[j] - self.ground[i]) > 3.4:
-                    continue
-                if dx and dy and min(self.clearance[i + dx], self.clearance[i + dy * self.nx]) < minimum:
-                    continue
-                weight = (1.4142 if dx and dy else 1.0) + 0.32 / self.clearance[j]
                 new = cost + weight
                 if new < distance.get(j, math.inf):
                     parent[j], distance[j] = i, new
                     heapq.heappush(open_set, (new + 1.45 * estimate(j), new, j))
+        if minimum == 2 and finish is not None and best != finish:
+            detour = self.landmark_detour(start, finish)
+            if detour:
+                path = [self.centers[i] for i in detour]
+                if start == self.key(*source):
+                    path = path[1:]
+                if finish == self.key(*goal):
+                    path.append(goal)
+                return path
         if best == start and open_set and open_set[0][2] in parent:
             best = open_set[0][2]
         path = []
